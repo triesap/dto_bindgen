@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod definitions;
 mod diagnostics;
 mod fields;
 mod identity;
@@ -8,6 +9,10 @@ mod source;
 mod types;
 
 pub use backend::{BackendId, ParseBackendIdError};
+pub use definitions::{
+    ContainerAttrs, EnumDef, EnumRepr, FieldDef, GenericParam, StructDef, TypeDef, VariantDef,
+    VariantShape,
+};
 pub use diagnostics::{Diagnostic, DiagnosticCode, ParseDiagnosticCodeError, Severity};
 pub use fields::{
     DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, SerializePresence,
