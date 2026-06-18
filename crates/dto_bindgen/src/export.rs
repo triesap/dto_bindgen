@@ -33,7 +33,7 @@ pub fn export_with_roots(
         VERSION,
         sha256_hex(format!("{registry:#?}").as_bytes()),
         sha256_hex(config_input.as_bytes()),
-        &generated_files,
+        &writer_files,
     );
     let writer = OutputWriter::new(output_root(&options.config_path, &config))
         .map_err(ExportError::Output)?;
@@ -254,6 +254,9 @@ enabled = false
             root.join("generated/dto_bindgen.generated.json").is_file(),
             "expected generated manifest"
         );
+        let manifest = fs::read_to_string(root.join("generated/dto_bindgen.generated.json"))
+            .expect("manifest should be readable");
+        assert!(manifest.contains("\"path\": \"ts/simple_dto.ts\""));
         assert_eq!(report.files.len(), 2);
 
         fs::remove_dir_all(root).unwrap();

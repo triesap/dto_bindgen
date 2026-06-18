@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{GeneratedFileSet, GeneratedManifest};
+use crate::{GeneratedFileSet, GeneratedManifest, GeneratedPathError, GeneratedRelativePath};
 
 pub const DEFAULT_MANIFEST_NAME: &str = "dto_bindgen.generated.json";
 
@@ -141,6 +141,110 @@ impl OutputWriter {
         } else {
             Err(OutputWriterError::CheckFailed { mismatches })
         }
+    }
+
+    pub fn read_manifest(&self) -> Result<Option<GeneratedManifest>, OutputWriterError> {
+        let manifest_path = self.manifest_path();
+        match fs::read_to_string(&manifest_path) {
+            Ok(input) => serde_json::from_str(&input)
+                .map(Some)
+                .map_err(OutputWriterError::ManifestDeserialize),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(OutputWriterError::Read {
+                path: manifest_path,
+                source,
+            }),
+        }
+    }
+
+    pub fn clean_previous_manifest(&self) -> Result<OutputReport, OutputWriterError> {
+        match self.read_manifest()? {
+            Some(manifest) => self.clean_manifest(&manifest),
+            None => Ok(OutputReport {
+                files: Vec::new(),
+                manifest_path: self.manifest_path(),
+            }),
+        }
+    }
+
+    pub fn clean_manifest(
+        &self,
+        manifest: &GeneratedManifest,
+    ) -> Result<OutputReport, OutputWriterError> {
+        let mut targets = Vec::new();
+
+        for file in &manifest.files {
+            let relative_path = GeneratedRelativePath::new(&file.path).map_err(|source| {
+                OutputWriterError::InvalidManifestPath {
+                    path: file.path.clone(),
+                    source,
+                }
+            })?;
+            let target_path = relative_path.join_to(&self.root);
+            self.validate_target_path(&target_path)?;
+
+            match fs::symlink_metadata(&target_path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(OutputWriterError::SymlinkInOutputPath { path: target_path });
+                }
+                Ok(metadata) if metadata.is_dir() => {
+                    return Err(OutputWriterError::TargetIsDirectory { path: target_path });
+                }
+                Ok(_) => {
+                    targets.push(target_path);
+                }
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(OutputWriterError::ReadMetadata {
+                        path: target_path,
+                        source,
+                    });
+                }
+            }
+        }
+
+        let manifest_path = self.manifest_path();
+        match fs::symlink_metadata(&manifest_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(OutputWriterError::SymlinkInOutputPath {
+                    path: manifest_path,
+                });
+            }
+            Ok(metadata) if metadata.is_dir() => {
+                return Err(OutputWriterError::TargetIsDirectory {
+                    path: manifest_path,
+                });
+            }
+            Ok(_) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(OutputWriterError::ReadMetadata {
+                    path: manifest_path.clone(),
+                    source,
+                });
+            }
+        }
+
+        let mut removed = Vec::new();
+        for target_path in targets {
+            fs::remove_file(&target_path).map_err(|source| OutputWriterError::Delete {
+                path: target_path.clone(),
+                source,
+            })?;
+            removed.push(target_path);
+        }
+
+        if manifest_path.exists() {
+            fs::remove_file(&manifest_path).map_err(|source| OutputWriterError::Delete {
+                path: manifest_path.clone(),
+                source,
+            })?;
+        }
+
+        Ok(OutputReport {
+            files: removed,
+            manifest_path,
+        })
     }
 
     fn plan_files(
@@ -306,7 +410,16 @@ pub enum OutputWriterError {
         path: PathBuf,
         source: std::io::Error,
     },
+    Delete {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    InvalidManifestPath {
+        path: String,
+        source: GeneratedPathError,
+    },
     ManifestSerialize(serde_json::Error),
+    ManifestDeserialize(serde_json::Error),
     CheckFailed {
         mismatches: Vec<CheckMismatch>,
     },
@@ -369,8 +482,17 @@ impl fmt::Display for OutputWriterError {
             Self::Read { path, source } => {
                 write!(f, "failed to read {}: {source}", path.display())
             }
+            Self::Delete { path, source } => {
+                write!(f, "failed to delete {}: {source}", path.display())
+            }
+            Self::InvalidManifestPath { path, source } => {
+                write!(f, "generated manifest path `{path}` is invalid: {source}")
+            }
             Self::ManifestSerialize(source) => {
                 write!(f, "failed to serialize generated manifest: {source}")
+            }
+            Self::ManifestDeserialize(source) => {
+                write!(f, "failed to parse generated manifest: {source}")
             }
             Self::CheckFailed { mismatches } => {
                 write!(
@@ -391,8 +513,11 @@ impl std::error::Error for OutputWriterError {
             | Self::CreateDir { source, .. }
             | Self::WriteTemp { source, .. }
             | Self::Rename { source, .. }
-            | Self::Read { source, .. } => Some(source),
+            | Self::Read { source, .. }
+            | Self::Delete { source, .. } => Some(source),
+            Self::InvalidManifestPath { source, .. } => Some(source),
             Self::ManifestSerialize(source) => Some(source),
+            Self::ManifestDeserialize(source) => Some(source),
             Self::RootNotDirectory { .. }
             | Self::PathEscapesRoot { .. }
             | Self::SymlinkInOutputPath { .. }
@@ -481,7 +606,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
-    use crate::{BackendId, GeneratedFile, GeneratedFileSet};
+    use crate::{BackendId, GeneratedFile, GeneratedFileSet, GeneratedManifestFile};
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -583,6 +708,59 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.path().join("generated/ts/user.ts")).unwrap(),
             "drift\n"
+        );
+    }
+
+    #[test]
+    fn clean_removes_only_manifest_owned_files() {
+        let root = TempRoot::new();
+        let writer = OutputWriter::new(root.path()).unwrap();
+        let file_set = sample_file_set();
+        let manifest = sample_manifest(&file_set);
+        let unrelated = root.path().join("generated/ts/keep.ts");
+
+        writer.write(&file_set, &manifest).unwrap();
+        fs::write(&unrelated, "keep\n").unwrap();
+
+        let report = writer.clean_previous_manifest().unwrap();
+
+        assert_eq!(report.files.len(), 1);
+        assert!(!root.path().join("generated/ts/user.ts").exists());
+        assert!(!root.path().join(DEFAULT_MANIFEST_NAME).exists());
+        assert_eq!(fs::read_to_string(unrelated).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn clean_rejects_invalid_manifest_paths() {
+        let root = TempRoot::new();
+        let writer = OutputWriter::new(root.path()).unwrap();
+        fs::create_dir_all(root.path().join("generated/ts")).unwrap();
+        fs::write(root.path().join("generated/ts/user.ts"), "keep\n").unwrap();
+        let manifest = GeneratedManifest {
+            generator: "dto_bindgen".to_owned(),
+            version: "0.1.0".to_owned(),
+            registry_hash: "registry".to_owned(),
+            config_hash: "config".to_owned(),
+            files: vec![
+                GeneratedManifestFile {
+                    backend: "typescript".to_owned(),
+                    path: "generated/ts/user.ts".to_owned(),
+                    sha256: "digest".to_owned(),
+                },
+                GeneratedManifestFile {
+                    backend: "typescript".to_owned(),
+                    path: "../outside.ts".to_owned(),
+                    sha256: "digest".to_owned(),
+                },
+            ],
+        };
+
+        let err = writer.clean_manifest(&manifest).unwrap_err();
+
+        assert!(matches!(err, OutputWriterError::InvalidManifestPath { .. }));
+        assert_eq!(
+            fs::read_to_string(root.path().join("generated/ts/user.ts")).unwrap(),
+            "keep\n"
         );
     }
 

@@ -70,38 +70,40 @@ fn run_command(options: CliOptions, stdout: &mut String, stderr: &mut String) ->
                 }
             }
         }
-        Command::Export | Command::Check | Command::Clean | Command::Diagnostics => {
-            match dto_bindgen::config::Config::from_toml_path(&options.config_path) {
-                Ok(_) => {
-                    if options.json {
+        Command::Clean => match dto_bindgen::config::Config::from_toml_path(&options.config_path) {
+            Ok(config) => match dto_bindgen_core::OutputWriter::new(output_root(
+                &options.config_path,
+                &config.export.out_dir,
+            )) {
+                Ok(writer) => match writer.clean_previous_manifest() {
+                    Ok(report) => {
                         writeln!(
-                            stderr,
-                            "{{\"error\":\"explicit_roots_required\",\"command\":\"{}\",\"config\":\"{}\"}}",
-                            options.command.as_str(),
-                            escape_json(&options.config_path.display().to_string())
+                            stdout,
+                            "removed {} manifest-owned file(s)",
+                            report.files.len()
                         )
                         .expect("writing to a String cannot fail");
-                    } else {
-                        writeln!(
-                            stderr,
-                            "error: dto_bindgen {} requires explicit root descriptors",
-                            options.command.as_str()
-                        )
-                        .expect("writing to a String cannot fail");
-                        writeln!(
-                            stderr,
-                            "hint: call dto_bindgen::export_types!(config = \"{}\", roots = [...]) from a test, xtask, or export binary",
-                            options.config_path.display()
-                        )
-                        .expect("writing to a String cannot fail");
-                        writeln!(
-                            stderr,
-                            "hint: the standalone CLI does not discover Rust roots in the MVP"
-                        )
-                        .expect("writing to a String cannot fail");
+                        0
                     }
-                    2
+                    Err(source) => {
+                        writeln!(stderr, "error: {source}")
+                            .expect("writing to a String cannot fail");
+                        1
+                    }
+                },
+                Err(source) => {
+                    writeln!(stderr, "error: {source}").expect("writing to a String cannot fail");
+                    1
                 }
+            },
+            Err(source) => {
+                writeln!(stderr, "error: {source}").expect("writing to a String cannot fail");
+                1
+            }
+        },
+        Command::Export | Command::Check | Command::Diagnostics => {
+            match dto_bindgen::config::Config::from_toml_path(&options.config_path) {
+                Ok(_) => report_explicit_roots_required(&options, stderr),
                 Err(source) => {
                     writeln!(stderr, "error: {source}").expect("writing to a String cannot fail");
                     1
@@ -214,11 +216,49 @@ fn help_text() -> &'static str {
         "  config       Load and summarize dto_bindgen.toml without exporting.\n",
         "  export       Requires an explicit-root Rust harness in the MVP.\n",
         "  check        Requires an explicit-root Rust harness in the MVP.\n",
-        "  clean        Reserved for manifest-based cleanup.\n",
+        "  clean        Remove files listed in the previous generated manifest.\n",
         "  diagnostics  Reserved for structured diagnostic output.\n\n",
         "Explicit root export example:\n",
         "  dto_bindgen::export_types!(config = \"dto_bindgen.toml\", roots = [UserProfile, SdkEvent])\n",
     )
+}
+
+fn report_explicit_roots_required(options: &CliOptions, stderr: &mut String) -> i32 {
+    if options.json {
+        writeln!(
+            stderr,
+            "{{\"error\":\"explicit_roots_required\",\"command\":\"{}\",\"config\":\"{}\"}}",
+            options.command.as_str(),
+            escape_json(&options.config_path.display().to_string())
+        )
+        .expect("writing to a String cannot fail");
+    } else {
+        writeln!(
+            stderr,
+            "error: dto_bindgen {} requires explicit root descriptors",
+            options.command.as_str()
+        )
+        .expect("writing to a String cannot fail");
+        writeln!(
+            stderr,
+            "hint: call dto_bindgen::export_types!(config = \"{}\", roots = [...]) from a test, xtask, or export binary",
+            options.config_path.display()
+        )
+        .expect("writing to a String cannot fail");
+        writeln!(
+            stderr,
+            "hint: the standalone CLI does not discover Rust roots in the MVP"
+        )
+        .expect("writing to a String cannot fail");
+    }
+    2
+}
+
+fn output_root(config_path: &std::path::Path, out_dir: &str) -> PathBuf {
+    let base = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    base.join(out_dir)
 }
 
 fn escape_json(value: &str) -> String {
@@ -323,6 +363,60 @@ mod tests {
         assert_eq!(code, 2);
         assert!(stdout.is_empty());
         assert!(stderr.contains("requires explicit root descriptors"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clean_command_removes_manifest_owned_files() {
+        let root = temp_project();
+        let config_path = root.join("dto_bindgen.toml");
+        let generated = root.join("generated");
+        let generated_ts = generated.join("ts");
+        std::fs::create_dir_all(&generated_ts).unwrap();
+        std::fs::write(&config_path, "[export]\nout_dir = \"generated\"\n").unwrap();
+        std::fs::write(generated_ts.join("old.ts"), "old\n").unwrap();
+        std::fs::write(generated_ts.join("keep.ts"), "keep\n").unwrap();
+        std::fs::write(
+            generated.join("dto_bindgen.generated.json"),
+            r#"{
+  "generator": "dto_bindgen",
+  "version": "0.1.0",
+  "registry_hash": "registry",
+  "config_hash": "config",
+  "files": [
+    {
+      "backend": "typescript",
+      "path": "ts/old.ts",
+      "sha256": "digest"
+    }
+  ]
+}
+"#,
+        )
+        .unwrap();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        let code = run(
+            vec![
+                "clean".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert!(stdout.contains("removed 1 manifest-owned file"));
+        assert!(!generated_ts.join("old.ts").exists());
+        assert!(!generated.join("dto_bindgen.generated.json").exists());
+        assert_eq!(
+            std::fs::read_to_string(generated_ts.join("keep.ts")).unwrap(),
+            "keep\n"
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
