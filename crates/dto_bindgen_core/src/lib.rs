@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod config;
 mod definitions;
 mod diagnostics;
 mod fields;
@@ -10,6 +11,11 @@ mod source;
 mod types;
 
 pub use backend::{BackendId, ParseBackendIdError};
+pub use config::{
+    Config, ConfigError, ExportConfig, ImportExtension, LargeIntPolicy, ModuleResolution,
+    NumericConfig, PythonConfig, PythonMode, TsEmit, TypeScriptConfig, TypeScriptStyle,
+    UnknownFieldsPolicy,
+};
 pub use definitions::{
     ContainerAttrs, EnumDef, EnumRepr, FieldDef, GenericParam, StructDef, TypeDef, VariantDef,
     VariantShape,

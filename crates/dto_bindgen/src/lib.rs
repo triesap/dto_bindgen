@@ -4,7 +4,11 @@
 pub use dto_bindgen_macros::Dto;
 
 pub mod config {
-    pub use dto_bindgen_core::VERSION;
+    pub use dto_bindgen_core::{
+        Config, ConfigError, ExportConfig, ImportExtension, LargeIntPolicy, ModuleResolution,
+        NumericConfig, PythonConfig, PythonMode, TsEmit, TypeScriptConfig, TypeScriptStyle,
+        UnknownFieldsPolicy,
+    };
 }
 
 pub mod diagnostics {
