@@ -1,7 +1,10 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::{Config, ConfigError, Diagnostic, Registry, RootDescriptor, build_registry};
+use crate::{
+    BackendError, Config, ConfigError, Diagnostic, GeneratedFileSetError, OutputWriterError,
+    Registry, RootDescriptor, build_registry,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportOptions {
@@ -34,6 +37,9 @@ pub struct ExportReport {
 pub enum ExportError {
     Config(ConfigError),
     Diagnostics(Vec<Diagnostic>),
+    Backend(BackendError),
+    GeneratedFiles(GeneratedFileSetError),
+    Output(OutputWriterError),
 }
 
 pub fn export_with_roots(
@@ -62,6 +68,9 @@ impl fmt::Display for ExportError {
             Self::Diagnostics(diagnostics) => {
                 write!(f, "export failed with {} diagnostic(s)", diagnostics.len())
             }
+            Self::Backend(source) => write!(f, "{source}"),
+            Self::GeneratedFiles(source) => write!(f, "{source}"),
+            Self::Output(source) => write!(f, "{source}"),
         }
     }
 }
@@ -71,6 +80,9 @@ impl std::error::Error for ExportError {
         match self {
             Self::Config(source) => Some(source),
             Self::Diagnostics(_) => None,
+            Self::Backend(source) => Some(source),
+            Self::GeneratedFiles(source) => Some(source),
+            Self::Output(source) => Some(source),
         }
     }
 }

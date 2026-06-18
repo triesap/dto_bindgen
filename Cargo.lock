@@ -50,8 +50,11 @@ dependencies = [
 name = "dto_bindgen"
 version = "0.1.0"
 dependencies = [
+ "dto_bindgen_backend_python",
+ "dto_bindgen_backend_ts",
  "dto_bindgen_core",
  "dto_bindgen_macros",
+ "sha2",
 ]
 
 [[package]]

@@ -15,8 +15,11 @@ categories.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+dto_bindgen_backend_python = { workspace = true }
+dto_bindgen_backend_ts = { workspace = true }
 dto_bindgen_core = { workspace = true }
 dto_bindgen_macros = { workspace = true }
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

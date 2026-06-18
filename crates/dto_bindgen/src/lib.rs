@@ -19,12 +19,7 @@ pub mod diagnostics {
     };
 }
 
-pub mod export {
-    pub use dto_bindgen_core::{
-        DescribeCtx, ExportError, ExportOptions, ExportReport, Registry, RootDescriptor, TypeRef,
-        VERSION, build_registry, export_with_roots,
-    };
-}
+pub mod export;
 
 #[macro_export]
 macro_rules! export_types {

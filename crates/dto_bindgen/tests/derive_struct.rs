@@ -175,11 +175,11 @@ fn export_types_macro_builds_and_validates_roots() {
     )
     .unwrap();
 
-    std::fs::remove_file(config_path).unwrap();
-
     assert_eq!(report.registry.roots.len(), 2);
-    assert!(report.files.is_empty());
+    assert!(!report.files.is_empty());
     assert!(report.diagnostics.is_empty());
+
+    cleanup_config(&config_path);
 }
 
 #[test]
@@ -188,8 +188,6 @@ fn dto_int_repr_satisfies_large_integer_policy() {
 
     let report =
         dto_bindgen::export_types!(config = config_path.as_path(), roots = [LedgerEntry],).unwrap();
-
-    std::fs::remove_file(config_path).unwrap();
 
     let root = *report.registry.roots.iter().next().unwrap();
     let dto_bindgen::__private::TypeDef::Struct(def) = report.registry.type_def(root).unwrap()
@@ -200,6 +198,8 @@ fn dto_int_repr_satisfies_large_integer_policy() {
         def.fields[0].int_repr,
         Some(dto_bindgen::__private::IntRepr::JsonString)
     );
+
+    cleanup_config(&config_path);
 }
 
 #[test]
@@ -212,8 +212,6 @@ fn export_types_macro_returns_blocking_diagnostics() {
     )
     .unwrap_err();
 
-    std::fs::remove_file(config_path).unwrap();
-
     let dto_bindgen::export::ExportError::Diagnostics(diagnostics) = err else {
         panic!("expected diagnostics error");
     };
@@ -221,17 +219,25 @@ fn export_types_macro_returns_blocking_diagnostics() {
         diagnostics[0].code,
         dto_bindgen::diagnostics::DiagnosticCode::new(401)
     );
+
+    cleanup_config(&config_path);
 }
 
 fn temp_config(contents: &str) -> std::path::PathBuf {
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "dto_bindgen_facade_export_test_{}_{}.toml",
+    let root = std::env::temp_dir().join(format!(
+        "dto_bindgen_facade_export_test_{}_{}",
         std::process::id(),
         counter
     ));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("dto_bindgen.toml");
     std::fs::write(&path, contents).unwrap();
     path
+}
+
+fn cleanup_config(path: &std::path::Path) {
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
 fn wire_field<'a>(def: &'a dto_bindgen::__private::StructDef, name: &str) -> Option<&'a str> {
