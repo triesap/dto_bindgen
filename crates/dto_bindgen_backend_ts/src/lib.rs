@@ -49,6 +49,22 @@ impl Backend for TypeScriptBackend {
             files.push(file);
         }
 
+        if !registry.types_by_id.is_empty() {
+            let index = GeneratedFile::new(
+                BackendId::TypeScript,
+                index_file_path(config),
+                render_index_file(registry, config),
+            )
+            .map_err(|err| {
+                BackendError::from_diagnostic(
+                    BackendId::TypeScript,
+                    Diagnostic::error(DiagnosticCode::new(701), err.to_string())
+                        .with_backend(BackendId::TypeScript),
+                )
+            })?;
+            files.push(index);
+        }
+
         GeneratedFileSet::try_from_files(files).map_err(|err| {
             BackendError::from_diagnostic(
                 BackendId::TypeScript,
@@ -416,6 +432,32 @@ fn module_specifier(type_def: &TypeDef, config: &Config) -> String {
     specifier
 }
 
+fn index_file_path(config: &Config) -> String {
+    let extension = match config.typescript.emit {
+        TsEmit::Ts => "ts",
+        TsEmit::Dts => "d.ts",
+    };
+    format!(
+        "{}/index.{}",
+        config.typescript.out_dir.trim_end_matches('/'),
+        extension
+    )
+}
+
+fn render_index_file(registry: &Registry, config: &Config) -> String {
+    let mut output = String::new();
+
+    for type_def in registry.types_by_id.values() {
+        output.push_str("export type { ");
+        output.push_str(type_name(type_def));
+        output.push_str(" } from \"");
+        output.push_str(&module_specifier(type_def, config));
+        output.push_str("\";\n");
+    }
+
+    output
+}
+
 fn to_snake_case(value: &str) -> String {
     let mut output = String::new();
 
@@ -514,17 +556,25 @@ mod tests {
             .render(&registry, &Config::default())
             .unwrap();
 
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3);
+        let user = find_file(&files, "user_profile.ts");
+        let role = find_file(&files, "user_role.ts");
+        let index = find_file(&files, "index.ts");
+        assert!(user.contents().contains("export type UserProfile"));
+        assert!(user.contents().contains("userId: string;"));
         assert!(
-            files.files()[0]
-                .contents()
-                .contains("export type UserProfile")
-        );
-        assert!(files.files()[0].contents().contains("userId: string;"));
-        assert!(
-            files.files()[1]
-                .contents()
+            role.contents()
                 .contains("export type UserRole = \"admin\" | \"guestUser\";")
+        );
+        assert!(
+            index
+                .contents()
+                .contains("export type { UserProfile } from \"./user_profile\";")
+        );
+        assert!(
+            index
+                .contents()
+                .contains("export type { UserRole } from \"./user_role\";")
         );
     }
 
@@ -601,7 +651,7 @@ mod tests {
         let files = TypeScriptBackend::new()
             .render(&registry, &Config::default())
             .unwrap();
-        let contents = files.files()[0].contents();
+        let contents = find_file(&files, "ledger_entry.ts").contents();
 
         assert!(contents.contains("amountMinorUnits: string;"));
         assert!(contents.contains("sequence: number;"));
@@ -626,11 +676,56 @@ mod tests {
         let files = TypeScriptBackend::new()
             .render(&registry, &Config::default())
             .unwrap();
+        let contents = find_file(&files, "profile_patch.ts").contents();
+
+        assert!(contents.contains("displayName?: string | null;"));
+    }
+
+    #[test]
+    fn honors_js_import_extension_in_imports_and_index() {
+        let mut config = Config::default();
+        config.typescript.import_extension = dto_bindgen_core::ImportExtension::Js;
+
+        let mut registry = Registry::new();
+        let user_id = registry.register_type(
+            RustTypeId::new("sdk", "UserProfile"),
+            TypeDef::Struct(dto_bindgen_core::StructDef::new(
+                "UserProfile",
+                "UserProfile",
+                span(),
+            )),
+        );
+        let event =
+            TypeDef::Struct(
+                dto_bindgen_core::StructDef::new("UserEvent", "UserEvent", span())
+                    .with_field(field("user", "user", TypeRef::named(user_id))),
+            );
+        registry.register_type(RustTypeId::new("sdk", "UserEvent"), event);
+
+        let files = TypeScriptBackend::new().render(&registry, &config).unwrap();
+        let event = find_file(&files, "user_event.ts");
+        let index = find_file(&files, "index.ts");
 
         assert!(
-            files.files()[0]
+            event
                 .contents()
-                .contains("displayName?: string | null;")
+                .contains("import type { UserProfile } from \"./user_profile.js\";")
         );
+        assert!(
+            index
+                .contents()
+                .contains("export type { UserProfile } from \"./user_profile.js\";")
+        );
+    }
+
+    fn find_file<'a>(
+        files: &'a GeneratedFileSet,
+        suffix: &str,
+    ) -> &'a dto_bindgen_core::GeneratedFile {
+        files
+            .files()
+            .iter()
+            .find(|file| file.relative_path().as_str().ends_with(suffix))
+            .unwrap()
     }
 }
