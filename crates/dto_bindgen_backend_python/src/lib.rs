@@ -1,5 +1,69 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
+
+use dto_bindgen_core::{
+    Backend, BackendError, BackendId, Config, Diagnostic, DiagnosticCode, EnumDef, EnumRepr,
+    FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry, SerializePresence,
+    StructDef, TypeDef, TypeId, TypeRef, VariantShape,
+};
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PythonBackend;
+
+impl PythonBackend {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Backend for PythonBackend {
+    fn id(&self) -> BackendId {
+        BackendId::Python
+    }
+
+    fn render(
+        &self,
+        registry: &Registry,
+        config: &Config,
+    ) -> Result<GeneratedFileSet, BackendError> {
+        if !config.python.enabled {
+            return Ok(GeneratedFileSet::empty());
+        }
+
+        let mut files = Vec::new();
+        for (type_id, type_def) in &registry.types_by_id {
+            let contents =
+                render_type_file(*type_id, type_def, registry, config).map_err(|diagnostic| {
+                    BackendError::from_diagnostic(BackendId::Python, diagnostic)
+                })?;
+            files.push(generated_file(type_file_path(type_def, config), contents)?);
+        }
+
+        if !registry.types_by_id.is_empty() {
+            files.push(generated_file(
+                package_file_path("__init__.py", config),
+                render_init_file(registry),
+            )?);
+            files.push(generated_file(
+                package_file_path("errors.py", config),
+                render_errors_file(),
+            )?);
+            if config.python.emit_py_typed {
+                files.push(generated_file(package_file_path("py.typed", config), "")?);
+            }
+        }
+
+        GeneratedFileSet::try_from_files(files).map_err(|err| {
+            BackendError::from_diagnostic(
+                BackendId::Python,
+                Diagnostic::error(DiagnosticCode::new(701), err.to_string())
+                    .with_backend(BackendId::Python),
+            )
+        })
+    }
+}
+
 pub fn backend_name() -> &'static str {
     "python"
 }
@@ -8,11 +72,648 @@ pub fn core_version() -> &'static str {
     dto_bindgen_core::VERSION
 }
 
+fn generated_file(
+    path: String,
+    contents: impl Into<String>,
+) -> Result<GeneratedFile, BackendError> {
+    GeneratedFile::new(BackendId::Python, path, contents).map_err(|err| {
+        BackendError::from_diagnostic(
+            BackendId::Python,
+            Diagnostic::error(DiagnosticCode::new(701), err.to_string())
+                .with_backend(BackendId::Python),
+        )
+    })
+}
+
+fn render_type_file(
+    type_id: TypeId,
+    type_def: &TypeDef,
+    registry: &Registry,
+    config: &Config,
+) -> Result<String, Diagnostic> {
+    let mut output = String::new();
+    output.push_str("from __future__ import annotations\n\n");
+
+    match type_def {
+        TypeDef::Struct(_) => output.push_str(
+            "from dataclasses import dataclass, field\nfrom typing import Any\n\nfrom .errors import DtoParseError\n",
+        ),
+        TypeDef::Enum(def)
+            if matches!(def.repr, EnumRepr::External)
+                && def
+                    .variants
+                    .iter()
+                    .all(|variant| matches!(variant.shape, VariantShape::Unit)) =>
+        {
+            output.push_str("from enum import StrEnum\n");
+        }
+        TypeDef::Enum(def) => {
+            return Err(Diagnostic::error(
+                DiagnosticCode::new(601),
+                "unsupported Python enum representation",
+            )
+            .with_type(def.export_name.clone())
+            .with_backend(BackendId::Python));
+        }
+    }
+
+    let imports = collect_imports(type_id, type_def);
+    for dependency in imports {
+        let dependency_def = registry.type_def(dependency).ok_or_else(|| {
+            Diagnostic::error(DiagnosticCode::new(102), "missing named dependency")
+                .with_backend(BackendId::Python)
+        })?;
+        output.push_str("\nfrom .");
+        output.push_str(&module_name(dependency_def));
+        output.push_str(" import ");
+        output.push_str(type_name(dependency_def));
+        output.push('\n');
+    }
+
+    output.push('\n');
+
+    match type_def {
+        TypeDef::Struct(def) => render_struct(def, registry, config, &mut output)?,
+        TypeDef::Enum(def) => render_fieldless_enum(def, &mut output),
+    }
+
+    Ok(output)
+}
+
+fn render_struct(
+    def: &StructDef,
+    registry: &Registry,
+    config: &Config,
+    output: &mut String,
+) -> Result<(), Diagnostic> {
+    output.push_str("@dataclass(");
+    output.push_str(&format!(
+        "frozen={}, slots={}, kw_only={}",
+        py_bool(config.python.frozen),
+        py_bool(config.python.slots),
+        py_bool(config.python.kw_only)
+    ));
+    output.push_str(")\nclass ");
+    output.push_str(&def.export_name);
+    output.push_str(":\n");
+
+    let fields = def
+        .fields
+        .iter()
+        .filter(|field| field_is_emitted(field))
+        .collect::<Vec<_>>();
+
+    if fields.is_empty() {
+        output.push_str("    pass\n");
+    } else {
+        for field in &fields {
+            output.push_str("    ");
+            output.push_str(&field.target.python);
+            output.push_str(": ");
+            output.push_str(&render_type_ref(&field.ty, registry, field)?);
+            output.push_str(" = field(metadata={\"wire_name\": \"");
+            output.push_str(&escape_py_string(&field.wire.serialize_name));
+            output.push_str("\"})\n");
+        }
+    }
+
+    if config.python.emit_from_dict {
+        render_from_dict(def, &fields, registry, output)?;
+    }
+    if config.python.emit_to_dict {
+        render_to_dict(def, &fields, registry, output)?;
+    }
+
+    Ok(())
+}
+
+fn render_from_dict(
+    def: &StructDef,
+    fields: &[&FieldDef],
+    registry: &Registry,
+    output: &mut String,
+) -> Result<(), Diagnostic> {
+    output.push_str("\n    @classmethod\n");
+    output.push_str("    def from_dict(cls, data: dict[str, Any]) -> \"");
+    output.push_str(&def.export_name);
+    output.push_str("\":\n");
+    output.push_str("        try:\n");
+
+    if def.attrs.deny_unknown_fields {
+        output.push_str("            unknown = set(data) - {");
+        for (index, field) in fields.iter().enumerate() {
+            if index > 0 {
+                output.push_str(", ");
+            }
+            output.push('"');
+            output.push_str(&escape_py_string(&field.wire.deserialize_name));
+            output.push('"');
+        }
+        output.push_str("}\n");
+        output.push_str("            if unknown:\n");
+        output
+            .push_str("                raise ValueError(f\"unknown fields: {sorted(unknown)}\")\n");
+    }
+
+    output.push_str("            return cls(\n");
+    for field in fields {
+        output.push_str("                ");
+        output.push_str(&field.target.python);
+        output.push_str("=");
+        output.push_str(&parse_expr(
+            field,
+            registry,
+            &format!(
+                "data[\"{}\"]",
+                escape_py_string(&field.wire.deserialize_name)
+            ),
+        )?);
+        output.push_str(",\n");
+    }
+    output.push_str("            )\n");
+    output.push_str("        except Exception as exc:\n");
+    output.push_str("            raise DtoParseError(path=\"");
+    output.push_str(&escape_py_string(&def.export_name));
+    output.push_str("\", cause=exc) from exc\n");
+    Ok(())
+}
+
+fn render_to_dict(
+    _def: &StructDef,
+    fields: &[&FieldDef],
+    registry: &Registry,
+    output: &mut String,
+) -> Result<(), Diagnostic> {
+    output.push_str("\n    def to_dict(self) -> dict[str, Any]:\n");
+    output.push_str("        return {\n");
+    for field in fields {
+        output.push_str("            \"");
+        output.push_str(&escape_py_string(&field.wire.serialize_name));
+        output.push_str("\": ");
+        output.push_str(&serialize_expr(
+            field,
+            registry,
+            &format!("self.{}", field.target.python),
+        )?);
+        output.push_str(",\n");
+    }
+    output.push_str("        }\n");
+    Ok(())
+}
+
+fn render_fieldless_enum(def: &EnumDef, output: &mut String) {
+    output.push_str("class ");
+    output.push_str(&def.export_name);
+    output.push_str("(StrEnum):\n");
+
+    if def.variants.is_empty() {
+        output.push_str("    pass\n");
+        return;
+    }
+
+    for variant in &def.variants {
+        output.push_str("    ");
+        output.push_str(&enum_member_name(&variant.rust_name));
+        output.push_str(" = \"");
+        output.push_str(&escape_py_string(&variant.wire_name));
+        output.push_str("\"\n");
+    }
+}
+
+fn parse_expr(field: &FieldDef, registry: &Registry, access: &str) -> Result<String, Diagnostic> {
+    parse_type_expr(&field.ty, field.int_repr, registry, access, field)
+}
+
+fn serialize_expr(
+    field: &FieldDef,
+    registry: &Registry,
+    access: &str,
+) -> Result<String, Diagnostic> {
+    serialize_type_expr(&field.ty, field.int_repr, registry, access, field)
+}
+
+fn parse_type_expr(
+    ty: &TypeRef,
+    int_repr: Option<IntRepr>,
+    registry: &Registry,
+    access: &str,
+    field: &FieldDef,
+) -> Result<String, Diagnostic> {
+    match ty {
+        TypeRef::Primitive(primitive) => {
+            if primitive.requires_explicit_integer_policy() && int_repr == Some(IntRepr::JsonString)
+            {
+                Ok(format!("int({access})"))
+            } else {
+                Ok(access.to_owned())
+            }
+        }
+        TypeRef::String | TypeRef::Bytes(_) | TypeRef::GenericParam(_) | TypeRef::Override(_) => {
+            Ok(access.to_owned())
+        }
+        TypeRef::Option(inner) => Ok(format!(
+            "None if {access} is None else {}",
+            parse_type_expr(inner, int_repr, registry, access, field)?
+        )),
+        TypeRef::Vec(inner) | TypeRef::Array { item: inner, .. } => Ok(format!(
+            "[{} for item in {access}]",
+            parse_type_expr(inner, int_repr, registry, "item", field)?
+        )),
+        TypeRef::Map { key, value } => {
+            if !matches!(key.as_ref(), TypeRef::String) {
+                return Err(non_string_key(field));
+            }
+            Ok(format!(
+                "{{key: {} for key, value in {access}.items()}}",
+                parse_type_expr(value, int_repr, registry, "value", field)?
+            ))
+        }
+        TypeRef::Named(type_id) => {
+            let def = registry
+                .type_def(*type_id)
+                .ok_or_else(|| missing_named(field))?;
+            Ok(format!("{}.from_dict({access})", type_name(def)))
+        }
+    }
+}
+
+fn serialize_type_expr(
+    ty: &TypeRef,
+    int_repr: Option<IntRepr>,
+    registry: &Registry,
+    access: &str,
+    field: &FieldDef,
+) -> Result<String, Diagnostic> {
+    match ty {
+        TypeRef::Primitive(primitive) => {
+            if primitive.requires_explicit_integer_policy() && int_repr == Some(IntRepr::JsonString)
+            {
+                Ok(format!("str({access})"))
+            } else {
+                Ok(access.to_owned())
+            }
+        }
+        TypeRef::String | TypeRef::Bytes(_) | TypeRef::GenericParam(_) | TypeRef::Override(_) => {
+            Ok(access.to_owned())
+        }
+        TypeRef::Option(inner) => Ok(format!(
+            "None if {access} is None else {}",
+            serialize_type_expr(inner, int_repr, registry, access, field)?
+        )),
+        TypeRef::Vec(inner) | TypeRef::Array { item: inner, .. } => Ok(format!(
+            "[{} for item in {access}]",
+            serialize_type_expr(inner, int_repr, registry, "item", field)?
+        )),
+        TypeRef::Map { key, value } => {
+            if !matches!(key.as_ref(), TypeRef::String) {
+                return Err(non_string_key(field));
+            }
+            Ok(format!(
+                "{{key: {} for key, value in {access}.items()}}",
+                serialize_type_expr(value, int_repr, registry, "value", field)?
+            ))
+        }
+        TypeRef::Named(type_id) => {
+            registry
+                .type_def(*type_id)
+                .ok_or_else(|| missing_named(field))?;
+            Ok(format!("{access}.to_dict()"))
+        }
+    }
+}
+
+fn render_type_ref(
+    ty: &TypeRef,
+    registry: &Registry,
+    field: &FieldDef,
+) -> Result<String, Diagnostic> {
+    match ty {
+        TypeRef::Primitive(primitive) => Ok(match primitive {
+            Primitive::Bool => "bool".to_owned(),
+            primitive if primitive.is_integer() => "int".to_owned(),
+            primitive if primitive.is_float() => "float".to_owned(),
+            _ => unreachable!("all primitive variants are bool, integer, or float"),
+        }),
+        TypeRef::String => Ok("str".to_owned()),
+        TypeRef::Bytes(_) => Ok("bytes".to_owned()),
+        TypeRef::Option(inner) => Ok(format!(
+            "{} | None",
+            render_type_ref(inner, registry, field)?
+        )),
+        TypeRef::Vec(inner) | TypeRef::Array { item: inner, .. } => Ok(format!(
+            "list[{}]",
+            render_type_ref(inner, registry, field)?
+        )),
+        TypeRef::Map { key, value } => {
+            if !matches!(key.as_ref(), TypeRef::String) {
+                return Err(non_string_key(field));
+            }
+            Ok(format!(
+                "dict[str, {}]",
+                render_type_ref(value, registry, field)?
+            ))
+        }
+        TypeRef::Named(type_id) => {
+            let def = registry
+                .type_def(*type_id)
+                .ok_or_else(|| missing_named(field))?;
+            Ok(type_name(def).to_owned())
+        }
+        TypeRef::GenericParam(name) => Ok(name.clone()),
+        TypeRef::Override(override_type) if override_type.backend == BackendId::Python => {
+            Ok(override_type.target_type.clone())
+        }
+        TypeRef::Override(_) => Err(Diagnostic::error(
+            DiagnosticCode::new(601),
+            "target override is for a different backend",
+        )
+        .with_field(field.rust_name.to_string())
+        .with_backend(BackendId::Python)),
+    }
+}
+
+fn render_init_file(registry: &Registry) -> String {
+    let mut output = String::new();
+    output.push_str("from .errors import DtoParseError\n");
+
+    for type_def in registry.types_by_id.values() {
+        output.push_str("from .");
+        output.push_str(&module_name(type_def));
+        output.push_str(" import ");
+        output.push_str(type_name(type_def));
+        output.push('\n');
+    }
+
+    output.push_str("\n__all__ = [\n    \"DtoParseError\",\n");
+    for type_def in registry.types_by_id.values() {
+        output.push_str("    \"");
+        output.push_str(type_name(type_def));
+        output.push_str("\",\n");
+    }
+    output.push_str("]\n");
+    output
+}
+
+fn render_errors_file() -> String {
+    "from __future__ import annotations\n\n\nclass DtoParseError(ValueError):\n    def __init__(self, path: str, cause: Exception | None = None) -> None:\n        self.path = path\n        self.cause = cause\n        message = f\"failed to parse DTO at {path}\"\n        if cause is not None:\n            message = f\"{message}: {cause}\"\n        super().__init__(message)\n".to_owned()
+}
+
+fn collect_imports(type_id: TypeId, type_def: &TypeDef) -> BTreeSet<TypeId> {
+    let mut imports = BTreeSet::new();
+    collect_type_def_named_refs(type_def, &mut imports);
+    imports.remove(&type_id);
+    imports
+}
+
+fn collect_type_def_named_refs(type_def: &TypeDef, imports: &mut BTreeSet<TypeId>) {
+    match type_def {
+        TypeDef::Struct(def) => {
+            for field in &def.fields {
+                collect_type_ref_named_refs(&field.ty, imports);
+            }
+        }
+        TypeDef::Enum(_) => {}
+    }
+}
+
+fn collect_type_ref_named_refs(ty: &TypeRef, imports: &mut BTreeSet<TypeId>) {
+    match ty {
+        TypeRef::Named(type_id) => {
+            imports.insert(*type_id);
+        }
+        TypeRef::Option(inner) | TypeRef::Vec(inner) => collect_type_ref_named_refs(inner, imports),
+        TypeRef::Array { item, .. } => collect_type_ref_named_refs(item, imports),
+        TypeRef::Map { key, value } => {
+            collect_type_ref_named_refs(key, imports);
+            collect_type_ref_named_refs(value, imports);
+        }
+        TypeRef::Primitive(_)
+        | TypeRef::String
+        | TypeRef::Bytes(_)
+        | TypeRef::GenericParam(_)
+        | TypeRef::Override(_) => {}
+    }
+}
+
+fn field_is_emitted(field: &FieldDef) -> bool {
+    !matches!(field.presence.serialize_presence, SerializePresence::Never)
+}
+
+fn non_string_key(field: &FieldDef) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::new(609),
+        "non-string map keys are unsupported",
+    )
+    .with_field(field.rust_name.to_string())
+    .with_backend(BackendId::Python)
+}
+
+fn missing_named(field: &FieldDef) -> Diagnostic {
+    Diagnostic::error(DiagnosticCode::new(102), "missing named type reference")
+        .with_field(field.rust_name.to_string())
+        .with_backend(BackendId::Python)
+}
+
+fn type_file_path(type_def: &TypeDef, config: &Config) -> String {
+    package_file_path(&format!("{}.py", module_name(type_def)), config)
+}
+
+fn package_file_path(file_name: &str, config: &Config) -> String {
+    format!(
+        "{}/{}",
+        config.python.out_dir.trim_end_matches('/'),
+        file_name
+    )
+}
+
+fn type_name(type_def: &TypeDef) -> &str {
+    match type_def {
+        TypeDef::Struct(def) => &def.export_name,
+        TypeDef::Enum(def) => &def.export_name,
+    }
+}
+
+fn module_name(type_def: &TypeDef) -> String {
+    to_snake_case(type_name(type_def))
+}
+
+fn enum_member_name(value: &str) -> String {
+    to_snake_case(value).to_ascii_uppercase()
+}
+
+fn to_snake_case(value: &str) -> String {
+    let mut output = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if index > 0 {
+                output.push('_');
+            }
+            output.extend(ch.to_lowercase());
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+fn py_bool(value: bool) -> &'static str {
+    if value { "True" } else { "False" }
+}
+
+fn escape_py_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use dto_bindgen_core::{
+        FieldPresence, IdentName, RustTypeId, SourceSpan, TargetFieldNames, WireFieldNames,
+    };
+
+    fn span() -> SourceSpan {
+        SourceSpan::new("src/dto.rs", 1, 1)
+    }
+
+    fn field(name: &str, wire: &str, ty: TypeRef) -> FieldDef {
+        FieldDef::new(
+            IdentName::new(name),
+            WireFieldNames::same(wire),
+            TargetFieldNames::new(wire, name),
+            ty,
+            span(),
+        )
+    }
+
+    fn find_file<'a>(files: &'a GeneratedFileSet, suffix: &str) -> &'a GeneratedFile {
+        files
+            .files()
+            .iter()
+            .find(|file| file.relative_path().as_str().ends_with(suffix))
+            .unwrap()
+    }
+
     #[test]
     fn identifies_backend() {
         assert_eq!(crate::backend_name(), "python");
         assert!(!crate::core_version().is_empty());
+        assert_eq!(PythonBackend::new().id(), BackendId::Python);
+    }
+
+    #[test]
+    fn renders_struct_package_files() {
+        let def = TypeDef::Struct(
+            dto_bindgen_core::StructDef::new("UserProfile", "UserProfile", span())
+                .with_field(field("user_id", "userId", TypeRef::String))
+                .with_field(
+                    field(
+                        "display_name",
+                        "displayName",
+                        TypeRef::option(TypeRef::String),
+                    )
+                    .with_presence(FieldPresence::defaulted(
+                        dto_bindgen_core::DefaultKind::NoneValue,
+                    )),
+                ),
+        );
+        let mut registry = Registry::new();
+        registry.register_type(RustTypeId::new("sdk", "UserProfile"), def);
+
+        let files = PythonBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let user = find_file(&files, "user_profile.py");
+        let init = find_file(&files, "__init__.py");
+        let errors = find_file(&files, "errors.py");
+
+        assert!(
+            user.contents()
+                .contains("@dataclass(frozen=True, slots=True, kw_only=True)")
+        );
+        assert!(user.contents().contains("user_id: str"));
+        assert!(user.contents().contains("display_name: str | None"));
+        assert!(user.contents().contains("def from_dict"));
+        assert!(user.contents().contains("def to_dict"));
+        assert!(
+            init.contents()
+                .contains("from .user_profile import UserProfile")
+        );
+        assert!(errors.contents().contains("class DtoParseError"));
+        assert!(find_file(&files, "py.typed").contents().is_empty());
+    }
+
+    #[test]
+    fn renders_fieldless_enum() {
+        let def = TypeDef::Enum(
+            EnumDef::new("UserRole", "UserRole", EnumRepr::External, span())
+                .with_variant(dto_bindgen_core::VariantDef::new(
+                    "Admin",
+                    "admin",
+                    VariantShape::Unit,
+                    span(),
+                ))
+                .with_variant(dto_bindgen_core::VariantDef::new(
+                    "GuestUser",
+                    "guestUser",
+                    VariantShape::Unit,
+                    span(),
+                )),
+        );
+        let mut registry = Registry::new();
+        registry.register_type(RustTypeId::new("sdk", "UserRole"), def);
+
+        let files = PythonBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let role = find_file(&files, "user_role.py");
+
+        assert!(role.contents().contains("from enum import StrEnum"));
+        assert!(role.contents().contains("class UserRole(StrEnum):"));
+        assert!(role.contents().contains("ADMIN = \"admin\""));
+        assert!(role.contents().contains("GUEST_USER = \"guestUser\""));
+    }
+
+    #[test]
+    fn renders_named_imports_and_json_string_integers() {
+        let mut registry = Registry::new();
+        let user_id = registry.register_type(
+            RustTypeId::new("sdk", "UserProfile"),
+            TypeDef::Struct(dto_bindgen_core::StructDef::new(
+                "UserProfile",
+                "UserProfile",
+                span(),
+            )),
+        );
+        let amount = field(
+            "amount_minor_units",
+            "amountMinorUnits",
+            TypeRef::Primitive(Primitive::U128),
+        )
+        .with_int_repr(IntRepr::JsonString);
+        let entry = TypeDef::Struct(
+            dto_bindgen_core::StructDef::new("LedgerEntry", "LedgerEntry", span())
+                .with_field(field("user", "user", TypeRef::named(user_id)))
+                .with_field(amount),
+        );
+        registry.register_type(RustTypeId::new("sdk", "LedgerEntry"), entry);
+
+        let files = PythonBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let ledger = find_file(&files, "ledger_entry.py");
+
+        assert!(
+            ledger
+                .contents()
+                .contains("from .user_profile import UserProfile")
+        );
+        assert!(ledger.contents().contains("user: UserProfile"));
+        assert!(ledger.contents().contains("amount_minor_units: int"));
+        assert!(
+            ledger
+                .contents()
+                .contains("int(data[\"amountMinorUnits\"])")
+        );
+        assert!(ledger.contents().contains("str(self.amount_minor_units)"));
     }
 }
