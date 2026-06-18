@@ -24,6 +24,16 @@ struct UserProfile {
     internal_note: String,
 }
 
+#[allow(dead_code)]
+#[derive(Dto)]
+#[serde(rename_all = "camelCase")]
+enum UserRole {
+    Admin,
+    GuestUser,
+    #[serde(rename = "owner")]
+    OwnerRole,
+}
+
 #[test]
 fn derives_named_struct_descriptors() {
     let registry = export::build_registry([export::RootDescriptor::new::<UserProfile>()]);
@@ -62,11 +72,41 @@ fn derives_named_struct_descriptors() {
     assert!(registry.dependencies_of(root).any(|dep| dep == address_id));
 }
 
+#[test]
+fn derives_fieldless_enum_descriptors() {
+    let registry = export::build_registry([export::RootDescriptor::new::<UserRole>()]);
+
+    assert!(registry.diagnostics.is_empty());
+    assert_eq!(registry.types_by_id.len(), 1);
+    assert_eq!(registry.roots.len(), 1);
+
+    let root = *registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Enum(def) = registry.type_def(root).unwrap() else {
+        panic!("expected enum root");
+    };
+
+    assert_eq!(def.export_name, "UserRole");
+    assert!(matches!(
+        def.repr,
+        dto_bindgen::__private::EnumRepr::External
+    ));
+    assert_eq!(variant_wire_name(def, "Admin"), Some("admin"));
+    assert_eq!(variant_wire_name(def, "GuestUser"), Some("guestUser"));
+    assert_eq!(variant_wire_name(def, "OwnerRole"), Some("owner"));
+}
+
 fn wire_field<'a>(def: &'a dto_bindgen::__private::StructDef, name: &str) -> Option<&'a str> {
     def.fields
         .iter()
         .find(|field| field.rust_name.as_str() == name)
         .map(|field| field.wire.serialize_name.as_str())
+}
+
+fn variant_wire_name<'a>(def: &'a dto_bindgen::__private::EnumDef, name: &str) -> Option<&'a str> {
+    def.variants
+        .iter()
+        .find(|variant| variant.rust_name == name)
+        .map(|variant| variant.wire_name.as_str())
 }
 
 fn first_named_field(

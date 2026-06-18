@@ -3,7 +3,7 @@
 use proc_macro::TokenStream;
 
 use quote::{format_ident, quote};
-use syn::{Attribute, Data, DeriveInput, Fields, Ident, LitStr, Type, parse_macro_input};
+use syn::{Attribute, Data, DataEnum, DeriveInput, Fields, Ident, LitStr, Type, parse_macro_input};
 
 #[proc_macro_derive(Dto, attributes(dto, serde))]
 pub fn derive_dto(input: TokenStream) -> TokenStream {
@@ -15,8 +15,6 @@ pub fn derive_dto(input: TokenStream) -> TokenStream {
 }
 
 fn expand_dto(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
-    let container_attrs = StructContainerAttrs::parse(&input.attrs)?;
-
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             input.generics,
@@ -24,18 +22,93 @@ fn expand_dto(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         ));
     }
 
+    let attrs = input.attrs;
     let ident = input.ident;
     match input.data {
-        Data::Struct(data) => expand_struct(ident, data.fields, container_attrs),
-        Data::Enum(_) => Err(syn::Error::new_spanned(
-            ident,
-            "`Dto` derive for enums is not implemented yet",
-        )),
+        Data::Struct(data) => {
+            expand_struct(ident, data.fields, StructContainerAttrs::parse(&attrs)?)
+        }
+        Data::Enum(data) => expand_enum(ident, data, EnumContainerAttrs::parse(&attrs)?),
         Data::Union(_) => Err(syn::Error::new_spanned(
             ident,
             "`Dto` derive does not support unions",
         )),
     }
+}
+
+fn expand_enum(
+    ident: Ident,
+    data: DataEnum,
+    container_attrs: EnumContainerAttrs,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut variant_tokens = Vec::new();
+
+    for variant in data.variants {
+        let variant_attrs = VariantAttrs::parse(&variant.attrs)?;
+        if !matches!(variant.fields, Fields::Unit) {
+            return Err(syn::Error::new_spanned(
+                variant,
+                "`Dto` derive for enums currently supports only fieldless variants",
+            ));
+        }
+
+        let rust_name = variant.ident.to_string();
+        let wire_name = variant_attrs
+            .rename
+            .unwrap_or_else(|| container_attrs.rename_variant(&rust_name));
+        variant_tokens.push(quote! {
+            __dto_bindgen_def = __dto_bindgen_def.with_variant(
+                ::dto_bindgen::__private::VariantDef::new(
+                    #rust_name,
+                    #wire_name,
+                    ::dto_bindgen::__private::VariantShape::Unit,
+                    ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
+                ),
+            );
+        });
+    }
+
+    let export_name = container_attrs
+        .rename
+        .clone()
+        .unwrap_or_else(|| ident.to_string());
+
+    Ok(quote! {
+        impl ::dto_bindgen::Dto for #ident {
+            fn describe(
+                ctx: &mut ::dto_bindgen::__private::DescribeCtx,
+            ) -> ::dto_bindgen::__private::TypeRef {
+                let __dto_bindgen_source =
+                    ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!());
+                let mut __dto_bindgen_def =
+                    ::dto_bindgen::__private::EnumDef::new(
+                        stringify!(#ident),
+                        #export_name,
+                        ::dto_bindgen::__private::EnumRepr::External,
+                        __dto_bindgen_source,
+                    );
+
+                #(#variant_tokens)*
+
+                let __dto_bindgen_module_path = module_path!()
+                    .split("::")
+                    .skip(1)
+                    .map(::std::string::ToString::to_string)
+                    .collect::<::std::vec::Vec<_>>();
+                let __dto_bindgen_rust_id =
+                    ::dto_bindgen::__private::RustTypeId::new(
+                        env!("CARGO_PKG_NAME"),
+                        stringify!(#ident),
+                    )
+                    .with_module_path(__dto_bindgen_module_path);
+
+                ctx.register_type(
+                    __dto_bindgen_rust_id,
+                    ::dto_bindgen::__private::TypeDef::Enum(__dto_bindgen_def),
+                )
+            }
+        }
+    })
 }
 
 fn expand_struct(
@@ -241,6 +314,89 @@ impl FieldAttrs {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EnumContainerAttrs {
+    rename: Option<String>,
+    rename_all: Option<String>,
+}
+
+impl EnumContainerAttrs {
+    fn parse(attrs: &[Attribute]) -> syn::Result<Self> {
+        let mut parsed = Self::default();
+
+        for attr in attrs {
+            if attr.path().is_ident("dto") {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "`Dto` derive does not support dto enum attributes in this slice yet",
+                ));
+            }
+
+            if !attr.path().is_ident("serde") {
+                continue;
+            }
+
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("rename") {
+                    parsed.rename = Some(parse_string_value(&meta)?);
+                    Ok(())
+                } else if meta.path.is_ident("rename_all") {
+                    let rule = parse_string_value(&meta)?;
+                    validate_rename_rule(&rule, &meta)?;
+                    parsed.rename_all = Some(rule);
+                    Ok(())
+                } else {
+                    Err(meta.error("unsupported serde enum attribute for `Dto` derive"))
+                }
+            })?;
+        }
+
+        Ok(parsed)
+    }
+
+    fn rename_variant(&self, rust_name: &str) -> String {
+        self.rename_all
+            .as_deref()
+            .map(|rule| apply_rename_rule(rule, rust_name))
+            .unwrap_or_else(|| rust_name.to_owned())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct VariantAttrs {
+    rename: Option<String>,
+}
+
+impl VariantAttrs {
+    fn parse(attrs: &[Attribute]) -> syn::Result<Self> {
+        let mut parsed = Self::default();
+
+        for attr in attrs {
+            if attr.path().is_ident("dto") {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "`Dto` derive does not support dto variant attributes in this slice yet",
+                ));
+            }
+
+            if !attr.path().is_ident("serde") {
+                continue;
+            }
+
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("rename") {
+                    parsed.rename = Some(parse_string_value(&meta)?);
+                    Ok(())
+                } else {
+                    Err(meta.error("unsupported serde variant attribute for `Dto` derive"))
+                }
+            })?;
+        }
+
+        Ok(parsed)
+    }
+}
+
 fn parse_string_value(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<String> {
     let value = meta.value()?;
     let literal: LitStr = value.parse()?;
@@ -257,20 +413,22 @@ fn validate_rename_rule(rule: &str, meta: &syn::meta::ParseNestedMeta<'_>) -> sy
 fn apply_rename_rule(rule: &str, rust_name: &str) -> String {
     match rule {
         "camelCase" => to_camel_case(rust_name),
-        "PascalCase" => {
-            let mut value = to_camel_case(rust_name);
-            if let Some(first) = value.get_mut(0..1) {
-                first.make_ascii_uppercase();
-            }
-            value
-        }
-        "SCREAMING_SNAKE_CASE" => rust_name.to_ascii_uppercase(),
+        "PascalCase" => to_pascal_case(rust_name),
+        "SCREAMING_SNAKE_CASE" => to_screaming_snake_case(rust_name),
         "snake_case" => rust_name.to_owned(),
         _ => rust_name.to_owned(),
     }
 }
 
 fn to_camel_case(value: &str) -> String {
+    if !value.contains('_') {
+        let mut chars = value.chars();
+        let Some(first) = chars.next() else {
+            return String::new();
+        };
+        return first.to_lowercase().chain(chars).collect();
+    }
+
     let mut output = String::new();
     let mut uppercase_next = false;
 
@@ -286,6 +444,38 @@ fn to_camel_case(value: &str) -> String {
         } else {
             output.push(ch);
         }
+    }
+
+    output
+}
+
+fn to_pascal_case(value: &str) -> String {
+    let mut value = to_camel_case(value);
+    if let Some(first) = value.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    value
+}
+
+fn to_screaming_snake_case(value: &str) -> String {
+    let mut output = String::new();
+    let mut previous_was_separator = true;
+
+    for ch in value.chars() {
+        if ch == '_' {
+            if !output.ends_with('_') {
+                output.push('_');
+            }
+            previous_was_separator = true;
+            continue;
+        }
+
+        if ch.is_ascii_uppercase() && !previous_was_separator && !output.ends_with('_') {
+            output.push('_');
+        }
+
+        output.extend(ch.to_uppercase());
+        previous_was_separator = false;
     }
 
     output
@@ -310,10 +500,15 @@ mod tests {
     #[test]
     fn applies_supported_rename_rules() {
         assert_eq!(apply_rename_rule("camelCase", "user_id"), "userId");
+        assert_eq!(apply_rename_rule("camelCase", "GuestUser"), "guestUser");
         assert_eq!(apply_rename_rule("PascalCase", "user_id"), "UserId");
         assert_eq!(
             apply_rename_rule("SCREAMING_SNAKE_CASE", "user_id"),
             "USER_ID"
+        );
+        assert_eq!(
+            apply_rename_rule("SCREAMING_SNAKE_CASE", "GuestUser"),
+            "GUEST_USER"
         );
         assert_eq!(apply_rename_rule("snake_case", "user_id"), "user_id");
     }
@@ -333,5 +528,18 @@ mod tests {
             err.to_string()
                 .contains("unsupported serde field attribute")
         );
+    }
+
+    #[test]
+    fn rejects_enum_data_variants() {
+        let input: DeriveInput = syn::parse_quote! {
+            enum Event {
+                UserCreated { user_id: String },
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("fieldless variants"));
     }
 }
