@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub export: ExportConfig,
@@ -24,17 +24,6 @@ impl Config {
             source,
         })?;
         Self::from_toml_str(&input)
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            export: ExportConfig::default(),
-            numeric: NumericConfig::default(),
-            typescript: TypeScriptConfig::default(),
-            python: PythonConfig::default(),
-        }
     }
 }
 

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::result_large_err)]
 
 use std::collections::BTreeSet;
 
@@ -217,7 +218,7 @@ fn render_from_dict(
     for field in fields {
         output.push_str("                ");
         output.push_str(&field.target.python);
-        output.push_str("=");
+        output.push('=');
         output.push_str(&parse_expr(
             field,
             registry,
@@ -416,7 +417,7 @@ fn render_tagged_enum(
         for field in fields.iter().filter(|field| field_is_emitted(field)) {
             output.push_str("                ");
             output.push_str(&field.target.python);
-            output.push_str("=");
+            output.push('=');
             output.push_str(&parse_expr(
                 field,
                 registry,

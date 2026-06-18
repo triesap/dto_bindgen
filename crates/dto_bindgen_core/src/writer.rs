@@ -40,13 +40,15 @@ pub struct OutputWriter {
 impl OutputWriter {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, OutputWriterError> {
         let original = root.as_ref().to_owned();
-        if let Err(source) = fs::create_dir_all(&original) {
-            if !original.exists() {
+        match fs::create_dir_all(&original) {
+            Ok(()) => {}
+            Err(source) if !original.exists() => {
                 return Err(OutputWriterError::CreateDir {
                     path: original,
                     source,
                 });
             }
+            Err(_) => {}
         }
 
         let root = fs::canonicalize(&original).map_err(|source| OutputWriterError::Root {
