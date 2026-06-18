@@ -1,0 +1,8 @@
+/target/
+/.aube/
+/.direnv/
+/.env
+/.env.*
+!.env.example
+*.tmp
+*.temp

@@ -1,0 +1,19 @@
+[package]
+name = "dto_bindgen_macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Proc macros for dto_bindgen."
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+proc-macro = true
+path = "src/lib.rs"
+
+[lints]
+workspace = true

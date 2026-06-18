@@ -1,0 +1,22 @@
+[package]
+name = "dto_bindgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dto_bindgen_core = { workspace = true }
+dto_bindgen_macros = { workspace = true }
+
+[lints]
+workspace = true

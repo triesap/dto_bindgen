@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dto_bindgen",
+    "crates/dto_bindgen_core",
+    "crates/dto_bindgen_macros",
+    "crates/dto_bindgen_backend_ts",
+    "crates/dto_bindgen_backend_python",
+    "crates/dto_bindgen_cli",
+    "crates/dto_bindgen_test",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Tyson Lupul <tyson@radroots.org>"]
+description = "Rust-source-driven DTO bindgen for TypeScript and Python dataclass surfaces."
+readme = "README.md"
+repository = "https://github.com/triesap/dto_bindgen"
+rust-version = "1.92.0"
+keywords = ["dto", "serde", "typescript", "python", "codegen"]
+categories = ["development-tools", "encoding"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+dto_bindgen = { version = "0.1.0", path = "crates/dto_bindgen" }
+dto_bindgen_backend_python = { version = "0.1.0", path = "crates/dto_bindgen_backend_python" }
+dto_bindgen_backend_ts = { version = "0.1.0", path = "crates/dto_bindgen_backend_ts" }
+dto_bindgen_core = { version = "0.1.0", path = "crates/dto_bindgen_core" }
+dto_bindgen_macros = { version = "0.1.0", path = "crates/dto_bindgen_macros" }
+dto_bindgen_test = { version = "0.1.0", path = "crates/dto_bindgen_test" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
