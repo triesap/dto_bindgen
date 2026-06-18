@@ -3,6 +3,7 @@
 mod backend;
 mod config;
 mod definitions;
+mod descriptor;
 mod diagnostics;
 mod fields;
 mod generated;
@@ -23,6 +24,7 @@ pub use definitions::{
     ContainerAttrs, EnumDef, EnumRepr, FieldDef, GenericParam, StructDef, TypeDef, VariantDef,
     VariantShape,
 };
+pub use descriptor::{DescribeCtx, Dto, RootDescriptor, build_registry};
 pub use diagnostics::{Diagnostic, DiagnosticCode, ParseDiagnosticCodeError, Severity};
 pub use fields::{
     DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, SerializePresence,

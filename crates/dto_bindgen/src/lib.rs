@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![doc = include_str!("../../../README.md")]
 
+pub use dto_bindgen_core::Dto;
 pub use dto_bindgen_macros::Dto;
 
 pub mod config {
@@ -12,11 +13,16 @@ pub mod config {
 }
 
 pub mod diagnostics {
-    pub use dto_bindgen_core::VERSION;
+    pub use dto_bindgen_core::{
+        BackendId, Diagnostic, DiagnosticCode, ParseBackendIdError, ParseDiagnosticCodeError,
+        Severity, SourceFile, SourcePosition, SourceSpan, VERSION,
+    };
 }
 
 pub mod export {
-    pub use dto_bindgen_core::VERSION;
+    pub use dto_bindgen_core::{
+        DescribeCtx, Registry, RootDescriptor, TypeRef, VERSION, build_registry,
+    };
 }
 
 pub mod prelude {
@@ -32,5 +38,13 @@ mod tests {
     #[test]
     fn exposes_version() {
         assert!(!crate::version().is_empty());
+    }
+
+    #[test]
+    fn exposes_descriptor_api() {
+        let registry =
+            crate::export::build_registry([crate::export::RootDescriptor::new::<String>()]);
+
+        assert!(registry.has_errors());
     }
 }
