@@ -2,12 +2,17 @@
 
 mod backend;
 mod diagnostics;
+mod fields;
 mod identity;
 mod source;
 mod types;
 
 pub use backend::{BackendId, ParseBackendIdError};
 pub use diagnostics::{Diagnostic, DiagnosticCode, ParseDiagnosticCodeError, Severity};
+pub use fields::{
+    DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, SerializePresence,
+    TargetFieldNames, WireFieldNames,
+};
 pub use identity::{GeneratedFileId, Namespace, RustTypeId, TargetTypeName, TypeId};
 pub use source::{SourceFile, SourcePosition, SourceSpan};
 pub use types::{BytesRepr, Primitive, TargetOverride, TypeRef};
