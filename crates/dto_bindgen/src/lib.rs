@@ -43,8 +43,8 @@ pub mod prelude {
 #[doc(hidden)]
 pub mod __private {
     pub use dto_bindgen_core::{
-        DescribeCtx, EnumDef, EnumRepr, FieldDef, IdentName, RustTypeId, SourceSpan, StructDef,
-        TargetFieldNames, TypeDef, TypeRef, VariantDef, VariantShape, WireFieldNames,
+        DescribeCtx, EnumDef, EnumRepr, FieldDef, IdentName, IntRepr, RustTypeId, SourceSpan,
+        StructDef, TargetFieldNames, TypeDef, TypeRef, VariantDef, VariantShape, WireFieldNames,
     };
 }
 

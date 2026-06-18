@@ -53,6 +53,13 @@ enum SdkEvent {
 #[allow(dead_code)]
 #[derive(Dto)]
 struct LedgerEntry {
+    #[dto(int_repr = "json_string")]
+    amount_minor_units: u128,
+}
+
+#[allow(dead_code)]
+#[derive(Dto)]
+struct UnannotatedLedgerEntry {
     amount_minor_units: u128,
 }
 
@@ -176,11 +183,34 @@ fn export_types_macro_builds_and_validates_roots() {
 }
 
 #[test]
+fn dto_int_repr_satisfies_large_integer_policy() {
+    let config_path = temp_config("");
+
+    let report =
+        dto_bindgen::export_types!(config = config_path.as_path(), roots = [LedgerEntry],).unwrap();
+
+    std::fs::remove_file(config_path).unwrap();
+
+    let root = *report.registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Struct(def) = report.registry.type_def(root).unwrap()
+    else {
+        panic!("expected ledger struct");
+    };
+    assert_eq!(
+        def.fields[0].int_repr,
+        Some(dto_bindgen::__private::IntRepr::JsonString)
+    );
+}
+
+#[test]
 fn export_types_macro_returns_blocking_diagnostics() {
     let config_path = temp_config("");
 
-    let err = dto_bindgen::export_types!(config = config_path.as_path(), roots = [LedgerEntry],)
-        .unwrap_err();
+    let err = dto_bindgen::export_types!(
+        config = config_path.as_path(),
+        roots = [UnannotatedLedgerEntry],
+    )
+    .unwrap_err();
 
     std::fs::remove_file(config_path).unwrap();
 

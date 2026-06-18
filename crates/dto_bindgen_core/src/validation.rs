@@ -280,6 +280,7 @@ fn validate_primitive(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     if primitive.requires_explicit_integer_policy()
+        && field.int_repr.is_none()
         && config.numeric.large_int_policy == LargeIntPolicy::RequireExplicit
     {
         diagnostics.push(
@@ -434,6 +435,18 @@ mod tests {
         config.numeric.large_int_policy = LargeIntPolicy::JsonString;
 
         assert!(registry.validate(&config).is_empty());
+    }
+
+    #[test]
+    fn allows_large_integers_when_field_policy_is_explicit() {
+        let registry = registry_with_type(TypeDef::Struct(
+            StructDef::new("LedgerEntry", "LedgerEntry", span(1)).with_field(
+                field("amount", "amount", TypeRef::Primitive(Primitive::U128))
+                    .with_int_repr(crate::IntRepr::JsonString),
+            ),
+        ));
+
+        assert!(registry.validate(&Config::default()).is_empty());
     }
 
     #[test]

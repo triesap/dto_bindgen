@@ -96,7 +96,8 @@ fn expand_enum(
                         .rename
                         .unwrap_or_else(|| container_attrs.rename_variant_field(&rust_name));
                     let ty = field.ty;
-                    let field_expr = field_def_tokens(&field_var, &rust_name, &wire_name);
+                    let field_expr =
+                        field_def_tokens(&field_var, &rust_name, &wire_name, field_attrs.int_repr);
 
                     field_tokens.push(quote! {
                         let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
@@ -262,7 +263,7 @@ fn expand_struct(
             .unwrap_or_else(|| container_attrs.rename_field(&rust_name));
         let ty = field.ty;
 
-        let field_expr = field_def_tokens(&field_var, &rust_name, &wire_name);
+        let field_expr = field_def_tokens(&field_var, &rust_name, &wire_name, field_attrs.int_repr);
         field_tokens.push(quote! {
             let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
             __dto_bindgen_def = __dto_bindgen_def.with_field(#field_expr);
@@ -321,7 +322,15 @@ fn field_def_tokens(
     field_var: &Ident,
     rust_name: &str,
     wire_name: &str,
+    int_repr: Option<IntReprAttr>,
 ) -> proc_macro2::TokenStream {
+    let int_repr_tokens = int_repr
+        .map(|value| {
+            let value = value.tokens();
+            quote!(.with_int_repr(#value))
+        })
+        .unwrap_or_default();
+
     quote! {
         ::dto_bindgen::__private::FieldDef::new(
             ::dto_bindgen::__private::IdentName::new(#rust_name),
@@ -329,7 +338,7 @@ fn field_def_tokens(
             ::dto_bindgen::__private::TargetFieldNames::new(#wire_name, #rust_name),
             #field_var,
             ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
-        )
+        )#int_repr_tokens
     }
 }
 
@@ -389,6 +398,7 @@ impl StructContainerAttrs {
 struct FieldAttrs {
     rename: Option<String>,
     skip: bool,
+    int_repr: Option<IntReprAttr>,
 }
 
 impl FieldAttrs {
@@ -400,6 +410,10 @@ impl FieldAttrs {
                 attr.parse_nested_meta(|meta| {
                     if meta.path.is_ident("skip") {
                         parsed.skip = true;
+                        Ok(())
+                    } else if meta.path.is_ident("int_repr") {
+                        parsed.int_repr =
+                            Some(IntReprAttr::parse(&parse_string_value(&meta)?, &meta)?);
                         Ok(())
                     } else {
                         Err(meta.error("unsupported dto field attribute for `Dto` derive"))
@@ -426,6 +440,34 @@ impl FieldAttrs {
         }
 
         Ok(parsed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntReprAttr {
+    JsonString,
+    JsonNumberUnsafe,
+    NonJsonBigint,
+}
+
+impl IntReprAttr {
+    fn parse(value: &str, meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Self> {
+        match value {
+            "json_string" => Ok(Self::JsonString),
+            "json_number_unsafe" => Ok(Self::JsonNumberUnsafe),
+            "non_json_bigint" => Ok(Self::NonJsonBigint),
+            _ => Err(meta.error("unsupported dto int_repr value")),
+        }
+    }
+
+    fn tokens(self) -> proc_macro2::TokenStream {
+        match self {
+            Self::JsonString => quote!(::dto_bindgen::__private::IntRepr::JsonString),
+            Self::JsonNumberUnsafe => {
+                quote!(::dto_bindgen::__private::IntRepr::JsonNumberUnsafe)
+            }
+            Self::NonJsonBigint => quote!(::dto_bindgen::__private::IntRepr::NonJsonBigint),
+        }
     }
 }
 
@@ -664,6 +706,38 @@ mod tests {
             err.to_string()
                 .contains("unsupported serde field attribute")
         );
+    }
+
+    #[test]
+    fn rejects_serde_with_for_large_integer_strings() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct LedgerEntry {
+                #[serde(with = "my_u128_string_serde")]
+                #[dto(int_repr = "json_string")]
+                amount: u128,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported serde field attribute")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_int_repr_values() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct LedgerEntry {
+                #[dto(int_repr = "magic")]
+                amount: u128,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("unsupported dto int_repr"));
     }
 
     #[test]

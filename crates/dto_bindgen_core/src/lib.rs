@@ -29,7 +29,7 @@ pub use descriptor::{DescribeCtx, Dto, RootDescriptor, build_registry};
 pub use diagnostics::{Diagnostic, DiagnosticCode, ParseDiagnosticCodeError, Severity};
 pub use export::{ExportError, ExportOptions, ExportReport, export_with_roots};
 pub use fields::{
-    DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, SerializePresence,
+    DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, IntRepr, SerializePresence,
     TargetFieldNames, WireFieldNames,
 };
 pub use generated::{

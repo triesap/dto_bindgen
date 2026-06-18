@@ -1,6 +1,6 @@
 use crate::{
-    DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, SourceSpan, TargetFieldNames,
-    TypeRef, WireFieldNames,
+    DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, IntRepr, SourceSpan,
+    TargetFieldNames, TypeRef, WireFieldNames,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -32,6 +32,7 @@ pub struct FieldDef {
     pub target: TargetFieldNames,
     pub ty: TypeRef,
     pub presence: FieldPresence,
+    pub int_repr: Option<IntRepr>,
     pub flatten: FlattenMode,
     pub docs: Option<DocString>,
     pub source: SourceSpan,
@@ -51,6 +52,7 @@ impl FieldDef {
             target,
             ty,
             presence: FieldPresence::required(),
+            int_repr: None,
             flatten: FlattenMode::None,
             docs: None,
             source,
@@ -64,6 +66,11 @@ impl FieldDef {
 
     pub fn with_docs(mut self, docs: DocString) -> Self {
         self.docs = Some(docs);
+        self
+    }
+
+    pub const fn with_int_repr(mut self, int_repr: IntRepr) -> Self {
+        self.int_repr = Some(int_repr);
         self
     }
 }
@@ -202,6 +209,7 @@ mod tests {
 
         assert!(field.presence.required_on_deserialize);
         assert_eq!(field.flatten, FlattenMode::None);
+        assert_eq!(field.int_repr, None);
         assert_eq!(field.wire.serialize_name, "userId");
     }
 
