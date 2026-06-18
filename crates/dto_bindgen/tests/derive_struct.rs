@@ -34,6 +34,19 @@ enum UserRole {
     OwnerRole,
 }
 
+#[allow(dead_code)]
+#[derive(Dto)]
+#[serde(
+    tag = "type",
+    content = "payload",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum SdkEvent {
+    UserCreated { user: UserProfile, event_id: String },
+    UserDeleted { user_id: String },
+}
+
 #[test]
 fn derives_named_struct_descriptors() {
     let registry = export::build_registry([export::RootDescriptor::new::<UserProfile>()]);
@@ -95,6 +108,47 @@ fn derives_fieldless_enum_descriptors() {
     assert_eq!(variant_wire_name(def, "OwnerRole"), Some("owner"));
 }
 
+#[test]
+fn derives_adjacently_tagged_enum_descriptors() {
+    let registry = export::build_registry([export::RootDescriptor::new::<SdkEvent>()]);
+
+    assert!(registry.diagnostics.is_empty());
+    assert_eq!(registry.types_by_id.len(), 3);
+    assert_eq!(registry.roots.len(), 1);
+
+    let root = *registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Enum(def) = registry.type_def(root).unwrap() else {
+        panic!("expected enum root");
+    };
+
+    let dto_bindgen::__private::EnumRepr::Adjacent { tag, content } = &def.repr else {
+        panic!("expected adjacent enum repr");
+    };
+    assert_eq!(tag, "type");
+    assert_eq!(content, "payload");
+    assert_eq!(variant_wire_name(def, "UserCreated"), Some("userCreated"));
+    assert_eq!(variant_wire_name(def, "UserDeleted"), Some("userDeleted"));
+    assert_eq!(
+        variant_field_wire_name(def, "UserCreated", "event_id"),
+        Some("eventId")
+    );
+    assert_eq!(
+        variant_field_wire_name(def, "UserDeleted", "user_id"),
+        Some("userId")
+    );
+
+    let dto_bindgen::export::TypeRef::Named(user_profile_id) =
+        variant_named_field(def, "UserCreated", "user").unwrap()
+    else {
+        panic!("expected named user profile field");
+    };
+    assert!(
+        registry
+            .dependencies_of(root)
+            .any(|dep| dep == user_profile_id)
+    );
+}
+
 fn wire_field<'a>(def: &'a dto_bindgen::__private::StructDef, name: &str) -> Option<&'a str> {
     def.fields
         .iter()
@@ -107,6 +161,41 @@ fn variant_wire_name<'a>(def: &'a dto_bindgen::__private::EnumDef, name: &str) -
         .iter()
         .find(|variant| variant.rust_name == name)
         .map(|variant| variant.wire_name.as_str())
+}
+
+fn variant_field_wire_name<'a>(
+    def: &'a dto_bindgen::__private::EnumDef,
+    variant_name: &str,
+    field_name: &str,
+) -> Option<&'a str> {
+    variant_fields(def, variant_name)?
+        .iter()
+        .find(|field| field.rust_name.as_str() == field_name)
+        .map(|field| field.wire.serialize_name.as_str())
+}
+
+fn variant_named_field(
+    def: &dto_bindgen::__private::EnumDef,
+    variant_name: &str,
+    field_name: &str,
+) -> Option<dto_bindgen::export::TypeRef> {
+    variant_fields(def, variant_name)?
+        .iter()
+        .find(|field| field.rust_name.as_str() == field_name)
+        .map(|field| field.ty.clone())
+}
+
+fn variant_fields<'a>(
+    def: &'a dto_bindgen::__private::EnumDef,
+    variant_name: &str,
+) -> Option<&'a [dto_bindgen::__private::FieldDef]> {
+    def.variants
+        .iter()
+        .find(|variant| variant.rust_name == variant_name)
+        .and_then(|variant| match &variant.shape {
+            dto_bindgen::__private::VariantShape::Struct(fields) => Some(fields.as_slice()),
+            _ => None,
+        })
 }
 
 fn first_named_field(

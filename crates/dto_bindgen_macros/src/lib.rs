@@ -3,7 +3,7 @@
 use proc_macro::TokenStream;
 
 use quote::{format_ident, quote};
-use syn::{Attribute, Data, DataEnum, DeriveInput, Fields, Ident, LitStr, Type, parse_macro_input};
+use syn::{Attribute, Data, DataEnum, DeriveInput, Fields, Ident, LitStr, parse_macro_input};
 
 #[proc_macro_derive(Dto, attributes(dto, serde))]
 pub fn derive_dto(input: TokenStream) -> TokenStream {
@@ -41,31 +41,89 @@ fn expand_enum(
     data: DataEnum,
     container_attrs: EnumContainerAttrs,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    let enum_repr = enum_repr_tokens(&container_attrs, &data)?;
     let mut variant_tokens = Vec::new();
 
-    for variant in data.variants {
+    for (variant_index, variant) in data.variants.into_iter().enumerate() {
         let variant_attrs = VariantAttrs::parse(&variant.attrs)?;
-        if !matches!(variant.fields, Fields::Unit) {
-            return Err(syn::Error::new_spanned(
-                variant,
-                "`Dto` derive for enums currently supports only fieldless variants",
-            ));
-        }
-
         let rust_name = variant.ident.to_string();
         let wire_name = variant_attrs
             .rename
             .unwrap_or_else(|| container_attrs.rename_variant(&rust_name));
-        variant_tokens.push(quote! {
-            __dto_bindgen_def = __dto_bindgen_def.with_variant(
-                ::dto_bindgen::__private::VariantDef::new(
-                    #rust_name,
-                    #wire_name,
-                    ::dto_bindgen::__private::VariantShape::Unit,
-                    ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
-                ),
-            );
-        });
+
+        match variant.fields {
+            Fields::Unit => {
+                variant_tokens.push(quote! {
+                    __dto_bindgen_def = __dto_bindgen_def.with_variant(
+                        ::dto_bindgen::__private::VariantDef::new(
+                            #rust_name,
+                            #wire_name,
+                            ::dto_bindgen::__private::VariantShape::Unit,
+                            ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
+                        ),
+                    );
+                });
+            }
+            Fields::Named(fields) => {
+                if container_attrs.tag.is_none() {
+                    return Err(syn::Error::new_spanned(
+                        fields,
+                        "externally tagged data enums are not supported in the MVP",
+                    ));
+                }
+
+                let variant_fields_var =
+                    format_ident!("__dto_bindgen_variant_fields_{variant_index}");
+                let mut field_tokens = Vec::new();
+
+                for (field_index, field) in fields.named.into_iter().enumerate() {
+                    let Some(field_ident) = field.ident else {
+                        return Err(syn::Error::new_spanned(
+                            field,
+                            "`Dto` derive requires named variant fields",
+                        ));
+                    };
+                    let field_attrs = FieldAttrs::parse(&field.attrs)?;
+                    if field_attrs.skip {
+                        continue;
+                    }
+
+                    let field_var = format_ident!(
+                        "__dto_bindgen_variant_{variant_index}_field_ty_{field_index}"
+                    );
+                    let rust_name = clean_ident(&field_ident);
+                    let wire_name = field_attrs
+                        .rename
+                        .unwrap_or_else(|| container_attrs.rename_variant_field(&rust_name));
+                    let ty = field.ty;
+                    let field_expr = field_def_tokens(&field_var, &rust_name, &wire_name);
+
+                    field_tokens.push(quote! {
+                        let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
+                        #variant_fields_var.push(#field_expr);
+                    });
+                }
+
+                variant_tokens.push(quote! {
+                    let mut #variant_fields_var = ::std::vec::Vec::new();
+                    #(#field_tokens)*
+                    __dto_bindgen_def = __dto_bindgen_def.with_variant(
+                        ::dto_bindgen::__private::VariantDef::new(
+                            #rust_name,
+                            #wire_name,
+                            ::dto_bindgen::__private::VariantShape::Struct(#variant_fields_var),
+                            ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
+                        ),
+                    );
+                });
+            }
+            Fields::Unnamed(fields) => {
+                return Err(syn::Error::new_spanned(
+                    fields,
+                    "`Dto` derive does not support tuple enum variants",
+                ));
+            }
+        }
     }
 
     let export_name = container_attrs
@@ -84,7 +142,7 @@ fn expand_enum(
                     ::dto_bindgen::__private::EnumDef::new(
                         stringify!(#ident),
                         #export_name,
-                        ::dto_bindgen::__private::EnumRepr::External,
+                        #enum_repr,
                         __dto_bindgen_source,
                     );
 
@@ -109,6 +167,63 @@ fn expand_enum(
             }
         }
     })
+}
+
+fn enum_repr_tokens(
+    attrs: &EnumContainerAttrs,
+    data: &DataEnum,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let has_unit = data
+        .variants
+        .iter()
+        .any(|variant| matches!(variant.fields, Fields::Unit));
+    let has_struct = data
+        .variants
+        .iter()
+        .any(|variant| matches!(variant.fields, Fields::Named(_)));
+    let has_tuple = data
+        .variants
+        .iter()
+        .any(|variant| matches!(variant.fields, Fields::Unnamed(_)));
+
+    if has_tuple {
+        return Err(syn::Error::new_spanned(
+            data.enum_token,
+            "`Dto` derive does not support tuple enum variants",
+        ));
+    }
+
+    if has_unit && has_struct {
+        return Err(syn::Error::new_spanned(
+            data.enum_token,
+            "`Dto` derive does not support mixed unit and data enum variants",
+        ));
+    }
+
+    match (&attrs.tag, &attrs.content, has_struct) {
+        (None, None, false) => Ok(quote!(::dto_bindgen::__private::EnumRepr::External)),
+        (None, Some(_), _) => Err(syn::Error::new_spanned(
+            data.enum_token,
+            "serde content requires serde tag for `Dto` derive",
+        )),
+        (Some(_), _, false) => Err(syn::Error::new_spanned(
+            data.enum_token,
+            "tagged fieldless enums are not supported in the MVP",
+        )),
+        (None, None, true) => Err(syn::Error::new_spanned(
+            data.enum_token,
+            "externally tagged data enums are not supported in the MVP",
+        )),
+        (Some(tag), None, true) => Ok(quote!(::dto_bindgen::__private::EnumRepr::Internal {
+            tag: #tag.to_owned(),
+        })),
+        (Some(tag), Some(content), true) => {
+            Ok(quote!(::dto_bindgen::__private::EnumRepr::Adjacent {
+                tag: #tag.to_owned(),
+                content: #content.to_owned(),
+            }))
+        }
+    }
 }
 
 fn expand_struct(
@@ -147,7 +262,11 @@ fn expand_struct(
             .unwrap_or_else(|| container_attrs.rename_field(&rust_name));
         let ty = field.ty;
 
-        field_tokens.push(field_descriptor_tokens(field_var, ty, rust_name, wire_name));
+        let field_expr = field_def_tokens(&field_var, &rust_name, &wire_name);
+        field_tokens.push(quote! {
+            let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
+            __dto_bindgen_def = __dto_bindgen_def.with_field(#field_expr);
+        });
     }
 
     let export_name = container_attrs
@@ -198,23 +317,19 @@ fn expand_struct(
     })
 }
 
-fn field_descriptor_tokens(
-    field_var: Ident,
-    ty: Type,
-    rust_name: String,
-    wire_name: String,
+fn field_def_tokens(
+    field_var: &Ident,
+    rust_name: &str,
+    wire_name: &str,
 ) -> proc_macro2::TokenStream {
     quote! {
-        let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
-        __dto_bindgen_def = __dto_bindgen_def.with_field(
-            ::dto_bindgen::__private::FieldDef::new(
-                ::dto_bindgen::__private::IdentName::new(#rust_name),
-                ::dto_bindgen::__private::WireFieldNames::same(#wire_name),
-                ::dto_bindgen::__private::TargetFieldNames::new(#wire_name, #rust_name),
-                #field_var,
-                ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
-            ),
-        );
+        ::dto_bindgen::__private::FieldDef::new(
+            ::dto_bindgen::__private::IdentName::new(#rust_name),
+            ::dto_bindgen::__private::WireFieldNames::same(#wire_name),
+            ::dto_bindgen::__private::TargetFieldNames::new(#wire_name, #rust_name),
+            #field_var,
+            ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
+        )
     }
 }
 
@@ -318,6 +433,9 @@ impl FieldAttrs {
 struct EnumContainerAttrs {
     rename: Option<String>,
     rename_all: Option<String>,
+    rename_all_fields: Option<String>,
+    tag: Option<String>,
+    content: Option<String>,
 }
 
 impl EnumContainerAttrs {
@@ -345,6 +463,17 @@ impl EnumContainerAttrs {
                     validate_rename_rule(&rule, &meta)?;
                     parsed.rename_all = Some(rule);
                     Ok(())
+                } else if meta.path.is_ident("rename_all_fields") {
+                    let rule = parse_string_value(&meta)?;
+                    validate_rename_rule(&rule, &meta)?;
+                    parsed.rename_all_fields = Some(rule);
+                    Ok(())
+                } else if meta.path.is_ident("tag") {
+                    parsed.tag = Some(parse_string_value(&meta)?);
+                    Ok(())
+                } else if meta.path.is_ident("content") {
+                    parsed.content = Some(parse_string_value(&meta)?);
+                    Ok(())
                 } else {
                     Err(meta.error("unsupported serde enum attribute for `Dto` derive"))
                 }
@@ -356,6 +485,13 @@ impl EnumContainerAttrs {
 
     fn rename_variant(&self, rust_name: &str) -> String {
         self.rename_all
+            .as_deref()
+            .map(|rule| apply_rename_rule(rule, rust_name))
+            .unwrap_or_else(|| rust_name.to_owned())
+    }
+
+    fn rename_variant_field(&self, rust_name: &str) -> String {
+        self.rename_all_fields
             .as_deref()
             .map(|rule| apply_rename_rule(rule, rust_name))
             .unwrap_or_else(|| rust_name.to_owned())
@@ -540,6 +676,6 @@ mod tests {
 
         let err = expand_dto(input).unwrap_err();
 
-        assert!(err.to_string().contains("fieldless variants"));
+        assert!(err.to_string().contains("externally tagged data enums"));
     }
 }
