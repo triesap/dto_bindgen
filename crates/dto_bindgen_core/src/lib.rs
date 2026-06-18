@@ -5,6 +5,7 @@ mod definitions;
 mod diagnostics;
 mod fields;
 mod identity;
+mod registry;
 mod source;
 mod types;
 
@@ -19,6 +20,7 @@ pub use fields::{
     TargetFieldNames, WireFieldNames,
 };
 pub use identity::{GeneratedFileId, Namespace, RustTypeId, TargetTypeName, TypeId};
+pub use registry::Registry;
 pub use source::{SourceFile, SourcePosition, SourceSpan};
 pub use types::{BytesRepr, Primitive, TargetOverride, TypeRef};
 
