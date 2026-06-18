@@ -29,6 +29,14 @@ pub mod prelude {
     pub use crate::Dto;
 }
 
+#[doc(hidden)]
+pub mod __private {
+    pub use dto_bindgen_core::{
+        DescribeCtx, FieldDef, IdentName, RustTypeId, SourceSpan, StructDef, TargetFieldNames,
+        TypeDef, TypeRef, WireFieldNames,
+    };
+}
+
 pub fn version() -> &'static str {
     dto_bindgen_core::VERSION
 }
