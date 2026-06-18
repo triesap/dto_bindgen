@@ -98,6 +98,10 @@ impl Registry {
         self.diagnostics.iter().any(Diagnostic::blocks_export)
     }
 
+    pub fn validate(&self, config: &crate::Config) -> Vec<Diagnostic> {
+        crate::validation::validate_registry(self, config)
+    }
+
     fn allocate_type_id(&mut self) -> TypeId {
         self.next_type_id += 1;
         TypeId::new(self.next_type_id)
