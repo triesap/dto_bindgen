@@ -19,6 +19,8 @@ dto_bindgen = { workspace = true }
 dto_bindgen_backend_python = { workspace = true }
 dto_bindgen_backend_ts = { workspace = true }
 dto_bindgen_core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

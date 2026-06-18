@@ -490,7 +490,13 @@ fn parse_type_expr(
             let def = registry
                 .type_def(*type_id)
                 .ok_or_else(|| missing_named(field))?;
-            Ok(format!("{}.from_dict({access})", type_name(def)))
+            match def {
+                TypeDef::Struct(_) => Ok(format!("{}.from_dict({access})", type_name(def))),
+                TypeDef::Enum(def) if is_fieldless_enum(def) => {
+                    Ok(format!("{}({access})", def.export_name))
+                }
+                TypeDef::Enum(_) => Ok(format!("{}.from_dict({access})", type_name(def))),
+            }
         }
     }
 }
@@ -532,10 +538,14 @@ fn serialize_type_expr(
             ))
         }
         TypeRef::Named(type_id) => {
-            registry
+            let def = registry
                 .type_def(*type_id)
                 .ok_or_else(|| missing_named(field))?;
-            Ok(format!("{access}.to_dict()"))
+            match def {
+                TypeDef::Struct(_) => Ok(format!("{access}.to_dict()")),
+                TypeDef::Enum(def) if is_fieldless_enum(def) => Ok(format!("{access}.value")),
+                TypeDef::Enum(_) => Ok(format!("{access}.to_dict()")),
+            }
         }
     }
 }
@@ -868,6 +878,19 @@ mod tests {
                 span(),
             )),
         );
+        let role_id = registry.register_type(
+            RustTypeId::new("sdk", "UserRole"),
+            TypeDef::Enum(
+                EnumDef::new("UserRole", "UserRole", EnumRepr::External, span()).with_variant(
+                    dto_bindgen_core::VariantDef::new(
+                        "GuestUser",
+                        "guestUser",
+                        VariantShape::Unit,
+                        span(),
+                    ),
+                ),
+            ),
+        );
         let amount = field(
             "amount_minor_units",
             "amountMinorUnits",
@@ -877,6 +900,7 @@ mod tests {
         let entry = TypeDef::Struct(
             dto_bindgen_core::StructDef::new("LedgerEntry", "LedgerEntry", span())
                 .with_field(field("user", "user", TypeRef::named(user_id)))
+                .with_field(field("role", "role", TypeRef::named(role_id)))
                 .with_field(amount),
         );
         registry.register_type(RustTypeId::new("sdk", "LedgerEntry"), entry);
@@ -891,7 +915,15 @@ mod tests {
                 .contents()
                 .contains("from .user_profile import UserProfile")
         );
+        assert!(
+            ledger
+                .contents()
+                .contains("from .user_role import UserRole")
+        );
         assert!(ledger.contents().contains("user: UserProfile"));
+        assert!(ledger.contents().contains("role: UserRole"));
+        assert!(ledger.contents().contains("UserRole(data[\"role\"])"));
+        assert!(ledger.contents().contains("\"role\": self.role.value"));
         assert!(ledger.contents().contains("amount_minor_units: int"));
         assert!(
             ledger
