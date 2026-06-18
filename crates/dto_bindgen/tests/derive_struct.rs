@@ -1,4 +1,7 @@
 use dto_bindgen::{Dto, export};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[allow(dead_code)]
 #[derive(Dto)]
@@ -45,6 +48,12 @@ enum UserRole {
 enum SdkEvent {
     UserCreated { user: UserProfile, event_id: String },
     UserDeleted { user_id: String },
+}
+
+#[allow(dead_code)]
+#[derive(Dto)]
+struct LedgerEntry {
+    amount_minor_units: u128,
 }
 
 #[test]
@@ -147,6 +156,52 @@ fn derives_adjacently_tagged_enum_descriptors() {
             .dependencies_of(root)
             .any(|dep| dep == user_profile_id)
     );
+}
+
+#[test]
+fn export_types_macro_builds_and_validates_roots() {
+    let config_path = temp_config("");
+
+    let report = dto_bindgen::export_types!(
+        config = config_path.as_path(),
+        roots = [UserProfile, SdkEvent],
+    )
+    .unwrap();
+
+    std::fs::remove_file(config_path).unwrap();
+
+    assert_eq!(report.registry.roots.len(), 2);
+    assert!(report.files.is_empty());
+    assert!(report.diagnostics.is_empty());
+}
+
+#[test]
+fn export_types_macro_returns_blocking_diagnostics() {
+    let config_path = temp_config("");
+
+    let err = dto_bindgen::export_types!(config = config_path.as_path(), roots = [LedgerEntry],)
+        .unwrap_err();
+
+    std::fs::remove_file(config_path).unwrap();
+
+    let dto_bindgen::export::ExportError::Diagnostics(diagnostics) = err else {
+        panic!("expected diagnostics error");
+    };
+    assert_eq!(
+        diagnostics[0].code,
+        dto_bindgen::diagnostics::DiagnosticCode::new(401)
+    );
+}
+
+fn temp_config(contents: &str) -> std::path::PathBuf {
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "dto_bindgen_facade_export_test_{}_{}.toml",
+        std::process::id(),
+        counter
+    ));
+    std::fs::write(&path, contents).unwrap();
+    path
 }
 
 fn wire_field<'a>(def: &'a dto_bindgen::__private::StructDef, name: &str) -> Option<&'a str> {

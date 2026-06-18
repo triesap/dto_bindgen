@@ -21,8 +21,19 @@ pub mod diagnostics {
 
 pub mod export {
     pub use dto_bindgen_core::{
-        DescribeCtx, Registry, RootDescriptor, TypeRef, VERSION, build_registry,
+        DescribeCtx, ExportError, ExportOptions, ExportReport, Registry, RootDescriptor, TypeRef,
+        VERSION, build_registry, export_with_roots,
     };
+}
+
+#[macro_export]
+macro_rules! export_types {
+    (config = $config:expr, roots = [$($root:ty),* $(,)?] $(,)?) => {{
+        $crate::export::export_with_roots(
+            $crate::export::ExportOptions::new($config),
+            [$($crate::export::RootDescriptor::new::<$root>()),*],
+        )
+    }};
 }
 
 pub mod prelude {
