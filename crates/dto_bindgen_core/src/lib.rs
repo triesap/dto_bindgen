@@ -5,12 +5,13 @@ mod config;
 mod definitions;
 mod diagnostics;
 mod fields;
+mod generated;
 mod identity;
 mod registry;
 mod source;
 mod types;
 
-pub use backend::{BackendId, ParseBackendIdError};
+pub use backend::{Backend, BackendError, BackendId, ParseBackendIdError};
 pub use config::{
     Config, ConfigError, ExportConfig, ImportExtension, LargeIntPolicy, ModuleResolution,
     NumericConfig, PythonConfig, PythonMode, TsEmit, TypeScriptConfig, TypeScriptStyle,
@@ -24,6 +25,10 @@ pub use diagnostics::{Diagnostic, DiagnosticCode, ParseDiagnosticCodeError, Seve
 pub use fields::{
     DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, SerializePresence,
     TargetFieldNames, WireFieldNames,
+};
+pub use generated::{
+    GeneratedFile, GeneratedFileSet, GeneratedFileSetError, GeneratedManifest,
+    GeneratedManifestFile, GeneratedPathError, GeneratedRelativePath,
 };
 pub use identity::{GeneratedFileId, Namespace, RustTypeId, TargetTypeName, TypeId};
 pub use registry::Registry;

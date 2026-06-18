@@ -33,6 +33,7 @@ dto_bindgen_core = { version = "0.1.0", path = "crates/dto_bindgen_core" }
 dto_bindgen_macros = { version = "0.1.0", path = "crates/dto_bindgen_macros" }
 dto_bindgen_test = { version = "0.1.0", path = "crates/dto_bindgen_test" }
 serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
 toml = "0.8"
 
 [profile.release]
