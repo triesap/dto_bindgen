@@ -98,15 +98,12 @@ fn render_type_file(
         TypeDef::Struct(_) => output.push_str(
             "from dataclasses import dataclass, field\nfrom typing import Any\n\nfrom .errors import DtoParseError\n",
         ),
-        TypeDef::Enum(def)
-            if matches!(def.repr, EnumRepr::External)
-                && def
-                    .variants
-                    .iter()
-                    .all(|variant| matches!(variant.shape, VariantShape::Unit)) =>
-        {
+        TypeDef::Enum(def) if is_fieldless_enum(def) => {
             output.push_str("from enum import StrEnum\n");
         }
+        TypeDef::Enum(def) if is_tagged_enum(def) => output.push_str(
+            "from dataclasses import dataclass, field\nfrom typing import Any, TypeAlias\n\nfrom .errors import DtoParseError\n",
+        ),
         TypeDef::Enum(def) => {
             return Err(Diagnostic::error(
                 DiagnosticCode::new(601),
@@ -134,7 +131,8 @@ fn render_type_file(
 
     match type_def {
         TypeDef::Struct(def) => render_struct(def, registry, config, &mut output)?,
-        TypeDef::Enum(def) => render_fieldless_enum(def, &mut output),
+        TypeDef::Enum(def) if is_fieldless_enum(def) => render_fieldless_enum(def, &mut output),
+        TypeDef::Enum(def) => render_tagged_enum(def, registry, config, &mut output)?,
     }
 
     Ok(output)
@@ -278,6 +276,166 @@ fn render_fieldless_enum(def: &EnumDef, output: &mut String) {
         output.push_str(&escape_py_string(&variant.wire_name));
         output.push_str("\"\n");
     }
+}
+
+fn render_tagged_enum(
+    def: &EnumDef,
+    registry: &Registry,
+    config: &Config,
+    output: &mut String,
+) -> Result<(), Diagnostic> {
+    let (tag, content) = match &def.repr {
+        EnumRepr::Internal { tag } => (tag.as_str(), None),
+        EnumRepr::Adjacent { tag, content } => (tag.as_str(), Some(content.as_str())),
+        EnumRepr::External | EnumRepr::Untagged => {
+            return Err(Diagnostic::error(
+                DiagnosticCode::new(601),
+                "unsupported Python enum representation",
+            )
+            .with_type(def.export_name.clone())
+            .with_backend(BackendId::Python));
+        }
+    };
+
+    let mut variant_class_names = Vec::new();
+    for variant in &def.variants {
+        let VariantShape::Struct(fields) = &variant.shape else {
+            return Err(Diagnostic::error(
+                DiagnosticCode::new(601),
+                "unsupported Python enum variant shape",
+            )
+            .with_type(def.export_name.clone())
+            .with_variant(variant.rust_name.clone())
+            .with_backend(BackendId::Python));
+        };
+
+        let class_name = format!("{}{}", def.export_name, variant.rust_name);
+        variant_class_names.push(class_name.clone());
+        let fields = fields
+            .iter()
+            .filter(|field| field_is_emitted(field))
+            .collect::<Vec<_>>();
+
+        output.push_str("@dataclass(");
+        output.push_str(&format!(
+            "frozen={}, slots={}, kw_only={}",
+            py_bool(config.python.frozen),
+            py_bool(config.python.slots),
+            py_bool(config.python.kw_only)
+        ));
+        output.push_str(")\nclass ");
+        output.push_str(&class_name);
+        output.push_str(":\n");
+
+        if fields.is_empty() {
+            output.push_str("    pass\n");
+        } else {
+            for field in &fields {
+                output.push_str("    ");
+                output.push_str(&field.target.python);
+                output.push_str(": ");
+                output.push_str(&render_type_ref(&field.ty, registry, field)?);
+                output.push_str(" = field(metadata={\"wire_name\": \"");
+                output.push_str(&escape_py_string(&field.wire.serialize_name));
+                output.push_str("\"})\n");
+            }
+        }
+
+        output.push_str("\n    def to_dict(self) -> dict[str, Any]:\n");
+        output.push_str("        return {\n");
+        output.push_str("            \"");
+        output.push_str(&escape_py_string(tag));
+        output.push_str("\": \"");
+        output.push_str(&escape_py_string(&variant.wire_name));
+        output.push_str("\",\n");
+        if let Some(content) = content {
+            output.push_str("            \"");
+            output.push_str(&escape_py_string(content));
+            output.push_str("\": {\n");
+            for field in &fields {
+                output.push_str("                \"");
+                output.push_str(&escape_py_string(&field.wire.serialize_name));
+                output.push_str("\": ");
+                output.push_str(&serialize_expr(
+                    field,
+                    registry,
+                    &format!("self.{}", field.target.python),
+                )?);
+                output.push_str(",\n");
+            }
+            output.push_str("            },\n");
+        } else {
+            for field in &fields {
+                output.push_str("            \"");
+                output.push_str(&escape_py_string(&field.wire.serialize_name));
+                output.push_str("\": ");
+                output.push_str(&serialize_expr(
+                    field,
+                    registry,
+                    &format!("self.{}", field.target.python),
+                )?);
+                output.push_str(",\n");
+            }
+        }
+        output.push_str("        }\n\n");
+    }
+
+    output.push_str(def.export_name.as_str());
+    output.push_str(": TypeAlias = ");
+    output.push_str(&variant_class_names.join(" | "));
+    output.push_str("\n\n");
+
+    let parser_name = format!("parse_{}", module_name(&TypeDef::Enum(def.clone())));
+    output.push_str("def ");
+    output.push_str(&parser_name);
+    output.push_str("(data: dict[str, Any]) -> ");
+    output.push_str(&def.export_name);
+    output.push_str(":\n");
+    output.push_str("    try:\n");
+    output.push_str("        tag = data[\"");
+    output.push_str(&escape_py_string(tag));
+    output.push_str("\"]\n");
+
+    for variant in &def.variants {
+        let VariantShape::Struct(fields) = &variant.shape else {
+            continue;
+        };
+        let class_name = format!("{}{}", def.export_name, variant.rust_name);
+        let payload_name = if content.is_some() { "payload" } else { "data" };
+        output.push_str("        if tag == \"");
+        output.push_str(&escape_py_string(&variant.wire_name));
+        output.push_str("\":\n");
+        if let Some(content) = content {
+            output.push_str("            payload = data[\"");
+            output.push_str(&escape_py_string(content));
+            output.push_str("\"]\n");
+        }
+        output.push_str("            return ");
+        output.push_str(&class_name);
+        output.push_str("(\n");
+        for field in fields.iter().filter(|field| field_is_emitted(field)) {
+            output.push_str("                ");
+            output.push_str(&field.target.python);
+            output.push_str("=");
+            output.push_str(&parse_expr(
+                field,
+                registry,
+                &format!(
+                    "{payload_name}[\"{}\"]",
+                    escape_py_string(&field.wire.deserialize_name)
+                ),
+            )?);
+            output.push_str(",\n");
+        }
+        output.push_str("            )\n");
+    }
+
+    output.push_str("        raise ValueError(f\"unknown tag: {tag}\")\n");
+    output.push_str("    except Exception as exc:\n");
+    output.push_str("        raise DtoParseError(path=\"");
+    output.push_str(&escape_py_string(&def.export_name));
+    output.push_str("\", cause=exc) from exc\n");
+    Ok(())
 }
 
 fn parse_expr(field: &FieldDef, registry: &Registry, access: &str) -> Result<String, Diagnostic> {
@@ -472,8 +630,34 @@ fn collect_type_def_named_refs(type_def: &TypeDef, imports: &mut BTreeSet<TypeId
                 collect_type_ref_named_refs(&field.ty, imports);
             }
         }
-        TypeDef::Enum(_) => {}
+        TypeDef::Enum(def) => {
+            for variant in &def.variants {
+                if let VariantShape::Struct(fields) = &variant.shape {
+                    for field in fields {
+                        collect_type_ref_named_refs(&field.ty, imports);
+                    }
+                }
+            }
+        }
     }
+}
+
+fn is_fieldless_enum(def: &EnumDef) -> bool {
+    matches!(def.repr, EnumRepr::External)
+        && def
+            .variants
+            .iter()
+            .all(|variant| matches!(variant.shape, VariantShape::Unit))
+}
+
+fn is_tagged_enum(def: &EnumDef) -> bool {
+    matches!(
+        def.repr,
+        EnumRepr::Internal { .. } | EnumRepr::Adjacent { .. }
+    ) && def
+        .variants
+        .iter()
+        .all(|variant| matches!(variant.shape, VariantShape::Struct(_)))
 }
 
 fn collect_type_ref_named_refs(ty: &TypeRef, imports: &mut BTreeSet<TypeId>) {
@@ -715,5 +899,69 @@ mod tests {
                 .contains("int(data[\"amountMinorUnits\"])")
         );
         assert!(ledger.contents().contains("str(self.amount_minor_units)"));
+    }
+
+    #[test]
+    fn renders_adjacent_tagged_enum_helpers() {
+        let mut registry = Registry::new();
+        let user_id = registry.register_type(
+            RustTypeId::new("sdk", "UserProfile"),
+            TypeDef::Struct(dto_bindgen_core::StructDef::new(
+                "UserProfile",
+                "UserProfile",
+                span(),
+            )),
+        );
+        let event = TypeDef::Enum(
+            EnumDef::new(
+                "SdkEvent",
+                "SdkEvent",
+                EnumRepr::Adjacent {
+                    tag: "type".to_owned(),
+                    content: "payload".to_owned(),
+                },
+                span(),
+            )
+            .with_variant(dto_bindgen_core::VariantDef::new(
+                "UserCreated",
+                "userCreated",
+                VariantShape::Struct(vec![
+                    field("user", "user", TypeRef::named(user_id)),
+                    field("event_id", "eventId", TypeRef::String),
+                ]),
+                span(),
+            )),
+        );
+        registry.register_type(RustTypeId::new("sdk", "SdkEvent"), event);
+
+        let files = PythonBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let event = find_file(&files, "sdk_event.py");
+
+        assert!(
+            event
+                .contents()
+                .contains("from .user_profile import UserProfile")
+        );
+        assert!(event.contents().contains("class SdkEventUserCreated"));
+        assert!(
+            event
+                .contents()
+                .contains("SdkEvent: TypeAlias = SdkEventUserCreated")
+        );
+        assert!(
+            event
+                .contents()
+                .contains("def parse_sdk_event(data: dict[str, Any]) -> SdkEvent:")
+        );
+        assert!(event.contents().contains("payload = data[\"payload\"]"));
+        assert!(
+            event
+                .contents()
+                .contains("UserProfile.from_dict(payload[\"user\"])")
+        );
+        assert!(event.contents().contains("\"type\": \"userCreated\""));
+        assert!(event.contents().contains("\"payload\": {"));
     }
 }
