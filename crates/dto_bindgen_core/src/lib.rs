@@ -10,6 +10,7 @@ mod identity;
 mod registry;
 mod source;
 mod types;
+mod writer;
 
 pub use backend::{Backend, BackendError, BackendId, ParseBackendIdError};
 pub use config::{
@@ -34,6 +35,7 @@ pub use identity::{GeneratedFileId, Namespace, RustTypeId, TargetTypeName, TypeI
 pub use registry::Registry;
 pub use source::{SourceFile, SourcePosition, SourceSpan};
 pub use types::{BytesRepr, Primitive, TargetOverride, TypeRef};
+pub use writer::{CheckMismatch, CheckMismatchKind, OutputReport, OutputWriter, OutputWriterError};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
