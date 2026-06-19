@@ -1,0 +1,11 @@
+{
+  "name": "dto-bindgen",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check:generated-ts": "DTO_BINDGEN_RUN_TSC=1 cargo test -p dto_bindgen_test generated_typescript_typechecks_strict -- --nocapture"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

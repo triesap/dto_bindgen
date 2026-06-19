@@ -254,6 +254,26 @@ else:
     run_python(&["-c", &script]);
 }
 
+#[test]
+fn generated_typescript_typechecks_strict() {
+    if std::env::var_os("DTO_BINDGEN_RUN_TSC").is_none() {
+        eprintln!("skipping strict TypeScript check; set DTO_BINDGEN_RUN_TSC=1 to enable");
+        return;
+    }
+
+    let root = TempProject::new();
+    let config_path = write_config(root.path());
+    export_fixture(&config_path);
+    let tsconfig_path = write_tsconfig(root.path());
+
+    run_tsc(&[
+        "--noEmit",
+        "--strict",
+        "--project",
+        tsconfig_path.to_str().expect("temp path should be UTF-8"),
+    ]);
+}
+
 fn user_profile() -> UserProfile {
     UserProfile {
         user_id: "user-1".to_owned(),
@@ -305,6 +325,28 @@ package = "my_sdk_dto"
     config_path
 }
 
+fn write_tsconfig(root: &Path) -> PathBuf {
+    let tsconfig_path = root.join("tsconfig.generated.json");
+    fs::write(
+        &tsconfig_path,
+        r#"
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["generated/ts/**/*.ts"]
+}
+"#,
+    )
+    .unwrap();
+    tsconfig_path
+}
+
 fn read_tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
     let mut files = BTreeMap::new();
     read_tree_into(root, root, &mut files);
@@ -338,6 +380,30 @@ fn run_python(args: &[&str]) {
     assert!(
         output.status.success(),
         "{python} {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn run_tsc(args: &[&str]) {
+    let configured = std::env::var("DTO_BINDGEN_TSC").ok();
+    let mut command = match configured {
+        Some(tsc) => Command::new(tsc),
+        None => {
+            let mut command = Command::new("npx");
+            command.arg("tsc");
+            command
+        }
+    };
+    let output = command
+        .args(args)
+        .output()
+        .unwrap_or_else(|source| panic!("failed to run TypeScript compiler: {source}"));
+
+    assert!(
+        output.status.success(),
+        "tsc {:?} failed\nstdout:\n{}\nstderr:\n{}",
         args,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)

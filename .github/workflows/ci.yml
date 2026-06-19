@@ -23,6 +23,15 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install TypeScript tooling
+        run: npm ci
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
@@ -34,3 +43,6 @@ jobs:
 
       - name: Test workspace
         run: cargo test --workspace --all-features
+
+      - name: Check generated TypeScript
+        run: npm run check:generated-ts
