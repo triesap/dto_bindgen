@@ -34,6 +34,8 @@ struct UserProfile {
     display_name: Option<String>,
     #[serde(default)]
     aliases: Vec<String>,
+    #[serde(default)]
+    preferences: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Serialize, Dto)]
@@ -77,7 +79,8 @@ fn serde_fixtures_match_supported_wire_shapes() {
             "tags": ["alpha", "beta"],
             "role": "guestUser",
             "displayName": null,
-            "aliases": []
+            "aliases": [],
+            "preferences": {}
         })
     );
     assert_eq!(
@@ -98,7 +101,8 @@ fn serde_fixtures_match_supported_wire_shapes() {
                     "tags": ["alpha", "beta"],
                     "role": "guestUser",
                     "displayName": null,
-                    "aliases": []
+                    "aliases": [],
+                    "preferences": {}
                 },
                 "eventId": "event-1"
             }
@@ -120,7 +124,8 @@ fn serde_fixtures_match_supported_wire_shapes() {
                         "tags": ["alpha", "beta"],
                         "role": "guestUser",
                         "displayName": null,
-                        "aliases": []
+                        "aliases": [],
+                        "preferences": {}
                     },
                     "eventId": "event-1"
                 }
@@ -146,6 +151,18 @@ fn export_is_byte_deterministic_for_generated_fixture() {
     let user_ts = String::from_utf8(first["ts/user_profile.ts"].clone()).unwrap();
     assert!(user_ts.contains("displayName?: string | null;"));
     assert!(user_ts.contains("aliases?: Array<string>;"));
+    assert!(user_ts.contains("preferences?: Record<string, string>;"));
+    let user_py = String::from_utf8(first["python/my_sdk_dto/user_profile.py"].clone()).unwrap();
+    assert!(user_py.contains("display_name: str | None = field(default=None"));
+    assert!(user_py.contains("aliases: list[str] = field(default_factory=list"));
+    assert!(user_py.contains("preferences: dict[str, str] = field(default_factory=dict"));
+    assert!(user_py.contains("data.get(\"displayName\")"));
+    assert!(user_py.contains("data.get(\"aliases\", [])"));
+    assert!(user_py.contains("data.get(\"preferences\", {})"));
+    let envelope_py =
+        String::from_utf8(first["python/my_sdk_dto/event_envelope.py"].clone()).unwrap();
+    assert!(envelope_py.contains("from .sdk_event import SdkEvent, parse_sdk_event"));
+    assert!(envelope_py.contains("parse_sdk_event(data[\"event\"])"));
 }
 
 #[test]
@@ -182,6 +199,7 @@ profile_data = {{
     "role": "guestUser",
     "displayName": None,
     "aliases": [],
+    "preferences": {{}},
 }}
 profile = UserProfile.from_dict(profile_data)
 assert isinstance(profile.address, PostalAddress)
@@ -198,10 +216,12 @@ profile_missing_defaults = {{
 profile_with_defaults = UserProfile.from_dict(profile_missing_defaults)
 assert profile_with_defaults.display_name is None
 assert profile_with_defaults.aliases == []
+assert profile_with_defaults.preferences == {{}}
 assert profile_with_defaults.to_dict() == {{
     **profile_missing_defaults,
     "displayName": None,
     "aliases": [],
+    "preferences": {{}},
 }}
 
 event_data = {{
@@ -245,6 +265,7 @@ fn user_profile() -> UserProfile {
         role: UserRole::GuestUser,
         display_name: None,
         aliases: Vec::new(),
+        preferences: BTreeMap::new(),
     }
 }
 
