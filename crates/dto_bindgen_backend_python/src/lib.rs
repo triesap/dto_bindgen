@@ -239,19 +239,39 @@ fn render_to_dict(
     output: &mut String,
 ) -> Result<(), Diagnostic> {
     output.push_str("\n    def to_dict(self) -> dict[str, Any]:\n");
-    output.push_str("        return {\n");
+    output.push_str("        output = {}\n");
+    render_dict_field_assignments("output", fields, registry, "self", "        ", output)?;
+    output.push_str("        return output\n");
+    Ok(())
+}
+
+fn render_dict_field_assignments(
+    target: &str,
+    fields: &[&FieldDef],
+    registry: &Registry,
+    access_prefix: &str,
+    indent: &str,
+    output: &mut String,
+) -> Result<(), Diagnostic> {
     for field in fields {
-        output.push_str("            \"");
+        let access = format!("{access_prefix}.{}", field.target.python);
+        if field.presence.serialize_presence == SerializePresence::SkipIfNone {
+            output.push_str(indent);
+            output.push_str("if ");
+            output.push_str(&access);
+            output.push_str(" is not None:\n");
+            output.push_str(indent);
+            output.push_str("    ");
+        } else {
+            output.push_str(indent);
+        }
+        output.push_str(target);
+        output.push_str("[\"");
         output.push_str(&escape_py_string(&field.wire.serialize_name));
-        output.push_str("\": ");
-        output.push_str(&serialize_expr(
-            field,
-            registry,
-            &format!("self.{}", field.target.python),
-        )?);
-        output.push_str(",\n");
+        output.push_str("\"] = ");
+        output.push_str(&serialize_expr(field, registry, &access)?);
+        output.push('\n');
     }
-    output.push_str("        }\n");
     Ok(())
 }
 
@@ -332,42 +352,25 @@ fn render_tagged_enum(
         }
 
         output.push_str("\n    def to_dict(self) -> dict[str, Any]:\n");
-        output.push_str("        return {\n");
+        output.push_str("        output = {\n");
         output.push_str("            \"");
         output.push_str(&escape_py_string(tag));
         output.push_str("\": \"");
         output.push_str(&escape_py_string(&variant.wire_name));
         output.push_str("\",\n");
+        output.push_str("        }\n");
         if let Some(content) = content {
-            output.push_str("            \"");
+            output.push_str("        payload = {}\n");
+            render_dict_field_assignments(
+                "payload", &fields, registry, "self", "        ", output,
+            )?;
+            output.push_str("        output[\"");
             output.push_str(&escape_py_string(content));
-            output.push_str("\": {\n");
-            for field in &fields {
-                output.push_str("                \"");
-                output.push_str(&escape_py_string(&field.wire.serialize_name));
-                output.push_str("\": ");
-                output.push_str(&serialize_expr(
-                    field,
-                    registry,
-                    &format!("self.{}", field.target.python),
-                )?);
-                output.push_str(",\n");
-            }
-            output.push_str("            },\n");
+            output.push_str("\"] = payload\n");
         } else {
-            for field in &fields {
-                output.push_str("            \"");
-                output.push_str(&escape_py_string(&field.wire.serialize_name));
-                output.push_str("\": ");
-                output.push_str(&serialize_expr(
-                    field,
-                    registry,
-                    &format!("self.{}", field.target.python),
-                )?);
-                output.push_str(",\n");
-            }
+            render_dict_field_assignments("output", &fields, registry, "self", "        ", output)?;
         }
-        output.push_str("        }\n\n");
+        output.push_str("        return output\n\n");
     }
 
     output.push_str(def.export_name.as_str());
@@ -1006,7 +1009,11 @@ mod tests {
         assert!(ledger.contents().contains("user: UserProfile"));
         assert!(ledger.contents().contains("role: UserRole"));
         assert!(ledger.contents().contains("UserRole(data[\"role\"])"));
-        assert!(ledger.contents().contains("\"role\": self.role.value"));
+        assert!(
+            ledger
+                .contents()
+                .contains("output[\"role\"] = self.role.value")
+        );
         assert!(ledger.contents().contains("amount_minor_units: int"));
         assert!(
             ledger
@@ -1077,6 +1084,6 @@ mod tests {
                 .contains("UserProfile.from_dict(payload[\"user\"])")
         );
         assert!(event.contents().contains("\"type\": \"userCreated\""));
-        assert!(event.contents().contains("\"payload\": {"));
+        assert!(event.contents().contains("output[\"payload\"] = payload"));
     }
 }

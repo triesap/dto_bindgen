@@ -31,6 +31,7 @@ struct UserProfile {
     address: PostalAddress,
     tags: Vec<String>,
     role: UserRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
     display_name: Option<String>,
     #[serde(default)]
     aliases: Vec<String>,
@@ -78,7 +79,6 @@ fn serde_fixtures_match_supported_wire_shapes() {
             },
             "tags": ["alpha", "beta"],
             "role": "guestUser",
-            "displayName": null,
             "aliases": [],
             "preferences": {}
         })
@@ -100,7 +100,6 @@ fn serde_fixtures_match_supported_wire_shapes() {
                     },
                     "tags": ["alpha", "beta"],
                     "role": "guestUser",
-                    "displayName": null,
                     "aliases": [],
                     "preferences": {}
                 },
@@ -123,7 +122,6 @@ fn serde_fixtures_match_supported_wire_shapes() {
                         },
                         "tags": ["alpha", "beta"],
                         "role": "guestUser",
-                        "displayName": null,
                         "aliases": [],
                         "preferences": {}
                     },
@@ -157,6 +155,7 @@ fn export_is_byte_deterministic_for_generated_fixture() {
     assert!(user_py.contains("aliases: list[str] = field(default_factory=list"));
     assert!(user_py.contains("preferences: dict[str, str] = field(default_factory=dict"));
     assert!(user_py.contains("data.get(\"displayName\")"));
+    assert!(user_py.contains("if self.display_name is not None"));
     assert!(user_py.contains("data.get(\"aliases\", [])"));
     assert!(user_py.contains("data.get(\"preferences\", {})"));
     let envelope_py =
@@ -201,10 +200,13 @@ profile_data = {{
     "aliases": [],
     "preferences": {{}},
 }}
+profile_output = {{
+    key: value for key, value in profile_data.items() if key != "displayName"
+}}
 profile = UserProfile.from_dict(profile_data)
 assert isinstance(profile.address, PostalAddress)
 assert profile.role == UserRole.GUEST_USER
-assert profile.to_dict() == profile_data
+assert profile.to_dict() == profile_output
 
 profile_missing_defaults = {{
     "userId": "user-1",
@@ -219,7 +221,6 @@ assert profile_with_defaults.aliases == []
 assert profile_with_defaults.preferences == {{}}
 assert profile_with_defaults.to_dict() == {{
     **profile_missing_defaults,
-    "displayName": None,
     "aliases": [],
     "preferences": {{}},
 }}
@@ -227,7 +228,7 @@ assert profile_with_defaults.to_dict() == {{
 event_data = {{
     "type": "userCreated",
     "payload": {{
-        "user": profile_data,
+        "user": profile_output,
         "eventId": "event-1",
     }},
 }}

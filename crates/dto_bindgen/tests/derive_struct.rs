@@ -88,6 +88,13 @@ struct ContainerDefaults {
     note: String,
 }
 
+#[allow(dead_code)]
+#[derive(Dto)]
+struct SkipNonePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+}
+
 #[test]
 fn derives_named_struct_descriptors() {
     let registry = export::build_registry([export::RootDescriptor::new::<UserProfile>()]);
@@ -346,6 +353,28 @@ fn derives_container_default_presence_for_supported_field_types() {
     assert_eq!(
         note.presence.default,
         Some(dto_bindgen::__private::DefaultKind::EmptyString)
+    );
+}
+
+#[test]
+fn derives_skip_if_none_presence_for_option_fields() {
+    let registry = export::build_registry([export::RootDescriptor::new::<SkipNonePatch>()]);
+
+    assert!(registry.diagnostics.is_empty());
+    let root = *registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Struct(def) = registry.type_def(root).unwrap() else {
+        panic!("expected skip-none struct");
+    };
+
+    let display_name = struct_field(def, "display_name").unwrap();
+    assert_eq!(
+        display_name.presence.serialize_presence,
+        dto_bindgen_core::SerializePresence::SkipIfNone
+    );
+    assert!(!display_name.presence.required_on_deserialize);
+    assert_eq!(
+        display_name.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::NoneValue)
     );
 }
 

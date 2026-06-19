@@ -180,10 +180,22 @@ fn validate_fields(
             );
         }
 
-        if matches!(
-            field.presence.serialize_presence,
-            SerializePresence::SkipIfNone | SerializePresence::SkipIfDefault
-        ) {
+        if field.presence.serialize_presence == SerializePresence::SkipIfNone
+            && !matches!(field.ty, TypeRef::Option(_))
+        {
+            diagnostics.push(
+                field_diagnostic(
+                    DiagnosticCode::new(308),
+                    "`skip_serializing_if = \"Option::is_none\"` requires an Option field",
+                    type_name,
+                    variant_name,
+                    field,
+                )
+                .with_help("Use `Option<T>` or remove the conditional serialization attribute."),
+            );
+        }
+
+        if field.presence.serialize_presence == SerializePresence::SkipIfDefault {
             diagnostics.push(
                 field_diagnostic(
                     DiagnosticCode::new(308),
@@ -447,6 +459,37 @@ mod tests {
         ));
 
         assert!(registry.validate(&Config::default()).is_empty());
+    }
+
+    #[test]
+    fn accepts_skip_if_none_for_option_fields() {
+        let registry = registry_with_type(TypeDef::Struct(
+            StructDef::new("ProfilePatch", "ProfilePatch", span(1)).with_field(
+                field(
+                    "display_name",
+                    "displayName",
+                    TypeRef::option(TypeRef::String),
+                )
+                .with_presence(FieldPresence::optional_nullable_skip_if_none()),
+            ),
+        ));
+
+        assert!(registry.validate(&Config::default()).is_empty());
+    }
+
+    #[test]
+    fn rejects_skip_if_none_for_non_option_fields() {
+        let registry = registry_with_type(TypeDef::Struct(
+            StructDef::new("ProfilePatch", "ProfilePatch", span(1)).with_field(
+                field("display_name", "displayName", TypeRef::String)
+                    .with_presence(FieldPresence::optional_nullable_skip_if_none()),
+            ),
+        ));
+
+        let diagnostics = registry.validate(&Config::default());
+
+        assert_eq!(diagnostics[0].code, DiagnosticCode::new(308));
+        assert_eq!(diagnostics[0].field_name.as_deref(), Some("display_name"));
     }
 
     #[test]

@@ -105,6 +105,15 @@ impl FieldPresence {
         }
     }
 
+    pub const fn optional_nullable_skip_if_none() -> Self {
+        Self {
+            nullable: true,
+            required_on_deserialize: false,
+            default: Some(DefaultKind::NoneValue),
+            serialize_presence: SerializePresence::SkipIfNone,
+        }
+    }
+
     pub const fn defaulted(default: DefaultKind) -> Self {
         Self {
             nullable: false,
@@ -194,6 +203,16 @@ mod tests {
         assert!(!presence.required_on_deserialize);
         assert_eq!(presence.default, Some(DefaultKind::NoneValue));
         assert_eq!(presence.serialize_presence, SerializePresence::Always);
+    }
+
+    #[test]
+    fn optional_nullable_skip_if_none_presence_omits_none_on_serialize() {
+        let presence = FieldPresence::optional_nullable_skip_if_none();
+        assert!(presence.nullable);
+        assert!(!presence.required_on_deserialize);
+        assert_eq!(presence.default, Some(DefaultKind::NoneValue));
+        assert_eq!(presence.serialize_presence, SerializePresence::SkipIfNone);
+        assert!(presence.is_serialized());
     }
 
     #[test]

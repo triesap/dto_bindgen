@@ -105,6 +105,7 @@ fn expand_enum(
                         &ty,
                         field_attrs.int_repr,
                         field_attrs.default,
+                        field_attrs.skip_serializing_if,
                     )?;
 
                     field_tokens.push(quote! {
@@ -278,6 +279,7 @@ fn expand_struct(
             &ty,
             field_attrs.int_repr,
             field_attrs.default || container_attrs.default,
+            field_attrs.skip_serializing_if,
         )?;
         field_tokens.push(quote! {
             let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
@@ -340,6 +342,7 @@ fn field_def_tokens(
     ty: &Type,
     int_repr: Option<IntReprAttr>,
     serde_default: bool,
+    skip_serializing_if: Option<String>,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let int_repr_tokens = int_repr
         .map(|value| {
@@ -347,7 +350,7 @@ fn field_def_tokens(
             quote!(.with_int_repr(#value))
         })
         .unwrap_or_default();
-    let presence_tokens = field_presence_tokens(ty, serde_default)?;
+    let presence_tokens = field_presence_tokens(ty, serde_default, skip_serializing_if.as_deref())?;
 
     Ok(quote! {
         ::dto_bindgen::__private::FieldDef::new(
@@ -428,6 +431,7 @@ struct FieldAttrs {
     rename: Option<String>,
     skip: bool,
     default: bool,
+    skip_serializing_if: Option<String>,
     int_repr: Option<IntReprAttr>,
 }
 
@@ -472,6 +476,16 @@ impl FieldAttrs {
                 } else if meta.path.is_ident("skip") {
                     parsed.skip = true;
                     Ok(())
+                } else if meta.path.is_ident("skip_serializing_if") {
+                    let value = parse_string_value(&meta)?;
+                    if value == "Option::is_none" {
+                        parsed.skip_serializing_if = Some(value);
+                        Ok(())
+                    } else {
+                        Err(meta.error(
+                            "only serde(skip_serializing_if = \"Option::is_none\") is supported for `Dto` derive",
+                        ))
+                    }
                 } else {
                     Err(meta.error("unsupported serde field attribute for `Dto` derive"))
                 }
@@ -482,10 +496,26 @@ impl FieldAttrs {
     }
 }
 
-fn field_presence_tokens(ty: &Type, serde_default: bool) -> syn::Result<proc_macro2::TokenStream> {
+fn field_presence_tokens(
+    ty: &Type,
+    serde_default: bool,
+    skip_serializing_if: Option<&str>,
+) -> syn::Result<proc_macro2::TokenStream> {
     if is_option_type(ty) {
+        if skip_serializing_if == Some("Option::is_none") {
+            return Ok(quote!(
+                .with_presence(::dto_bindgen::__private::FieldPresence::optional_nullable_skip_if_none())
+            ));
+        }
         return Ok(quote!(
             .with_presence(::dto_bindgen::__private::FieldPresence::optional_nullable())
+        ));
+    }
+
+    if skip_serializing_if == Some("Option::is_none") {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "serde(skip_serializing_if = \"Option::is_none\") is supported only for Option fields",
         ));
     }
 
@@ -831,6 +861,34 @@ mod tests {
         let err = expand_dto(input).unwrap_err();
 
         assert!(err.to_string().contains("custom serde default paths"));
+    }
+
+    #[test]
+    fn rejects_unsupported_skip_serializing_if_predicates() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Metadata {
+                #[serde(skip_serializing_if = "Vec::is_empty")]
+                values: Vec<String>,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("only serde(skip_serializing_if"));
+    }
+
+    #[test]
+    fn rejects_option_is_none_for_non_option_fields() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Metadata {
+                #[serde(skip_serializing_if = "Option::is_none")]
+                value: String,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("supported only for Option fields"));
     }
 
     #[test]

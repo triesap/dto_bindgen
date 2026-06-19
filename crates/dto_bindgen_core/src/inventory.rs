@@ -1378,6 +1378,9 @@ fn attr_supported(namespace: &str, scope: AttrScope, meta: &Meta) -> bool {
         ) => !matches!(meta, Meta::List(_)),
         ("serde", AttrScope::Container, "default") => matches!(meta, Meta::Path(_)),
         ("serde", AttrScope::Field, "rename" | "skip") => !matches!(meta, Meta::List(_)),
+        ("serde", AttrScope::Field, "skip_serializing_if") => {
+            meta_value(meta).as_deref() == Some("Option::is_none")
+        }
         ("serde", AttrScope::Field, "default") => matches!(meta, Meta::Path(_)),
         ("serde", AttrScope::Variant, "rename") => !matches!(meta, Meta::List(_)),
         ("dto", AttrScope::Field, "skip" | "int_repr") => !matches!(meta, Meta::List(_)),
