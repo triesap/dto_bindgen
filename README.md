@@ -84,9 +84,13 @@ The CLI is a helper for config, diagnostics plumbing, and manifest cleanup. It d
 cargo run -p dto_bindgen_cli -- --help
 cargo run -p dto_bindgen_cli -- config --config dto_bindgen.toml
 cargo run -p dto_bindgen_cli -- clean --config dto_bindgen.toml
+cargo run -p dto_bindgen_cli -- inventory --manifest dto_bindgen.inventory.toml \
+  --json-out docs/implementation/reports/sdk_inventory_pilot.json \
+  --markdown-out docs/implementation/reports/sdk_inventory_pilot.md
 ```
 
 Use a test, xtask, or small export binary that calls `dto_bindgen::export_types!` for export and check workflows.
+Inventory reports use explicit SDK source inputs from a manifest; the CLI does not scan every Rust root automatically.
 
 ## Supported MVP Shape
 
