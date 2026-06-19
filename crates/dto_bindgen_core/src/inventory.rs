@@ -862,8 +862,12 @@ impl InventoryScanner {
 
     fn scan_struct(&mut self, item: &ItemStruct) {
         let type_name = item.ident.to_string();
-        let attrs = self.collect_attrs(&item.attrs, AttrScope::Container);
         let derives = derive_names(&item.attrs);
+        if !has_inventory_derive(&derives) {
+            return;
+        }
+
+        let attrs = self.collect_attrs(&item.attrs, AttrScope::Container);
         let generics = generic_names(&item.generics);
         let fields = self.scan_fields(&type_name, None, &item.fields);
 
@@ -913,8 +917,12 @@ impl InventoryScanner {
 
     fn scan_enum(&mut self, item: &ItemEnum) {
         let type_name = item.ident.to_string();
-        let attrs = self.collect_attrs(&item.attrs, AttrScope::Container);
         let derives = derive_names(&item.attrs);
+        if !has_inventory_derive(&derives) {
+            return;
+        }
+
+        let attrs = self.collect_attrs(&item.attrs, AttrScope::Container);
         let generics = generic_names(&item.generics);
         let tagged = attrs.iter().any(|attr| {
             attr.namespace == "serde" && (attr.name == "tag" || attr.name == "content")
@@ -1201,6 +1209,15 @@ fn collect_known_dto_items(items: &[Item]) -> BTreeSet<String> {
             _ => None,
         })
         .collect()
+}
+
+fn has_inventory_derive(derives: &[String]) -> bool {
+    derives.iter().any(|name| {
+        matches!(
+            name.rsplit("::").next(),
+            Some("Serialize" | "Deserialize" | "Dto" | "TS")
+        )
+    })
 }
 
 fn attr_namespace(attr: &Attribute) -> Option<&'static str> {
@@ -1550,6 +1567,48 @@ mod tests {
                 .iter()
                 .any(|finding| { finding.attribute.as_deref() == Some("serde::default") })
         );
+    }
+
+    #[test]
+    fn ignores_plain_helper_items_without_inventory_derives() {
+        let source = r#"
+            use serde::{Deserialize, Serialize};
+
+            #[derive(Debug)]
+            struct HelperOptions {
+                output: std::path::PathBuf,
+            }
+
+            #[derive(Debug, thiserror::Error)]
+            enum HelperError {
+                #[error("bad input")]
+                BadInput(String),
+            }
+
+            #[derive(Serialize, Deserialize)]
+            struct PublicDto {
+                helper: HelperOptions,
+            }
+        "#;
+
+        let inventory = scan_rust_source("src/helpers.rs", source).unwrap();
+
+        assert_eq!(
+            inventory
+                .items
+                .iter()
+                .map(|item| item.rust_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["PublicDto"]
+        );
+        assert!(!inventory.findings.iter().any(|finding| {
+            finding.type_name.as_deref() == Some("HelperError") && finding.code == "INV1005"
+        }));
+        assert!(inventory.findings.iter().any(|finding| {
+            finding.code == "INV1101"
+                && finding.type_name.as_deref() == Some("PublicDto")
+                && finding.field_name.as_deref() == Some("helper")
+        }));
     }
 
     #[test]
