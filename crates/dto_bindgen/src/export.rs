@@ -52,6 +52,35 @@ pub fn export_with_roots(
     })
 }
 
+pub fn plan_with_roots(
+    options: ExportOptions,
+    roots: impl IntoIterator<Item = RootDescriptor>,
+) -> Result<ExportReport, ExportError> {
+    let (config, _) = load_config(&options)?;
+    let registry = build_registry(roots);
+    let mut diagnostics = registry.validate(&config);
+    diagnostics.extend(validate_enabled_backends(&registry, &config));
+
+    if diagnostics.iter().any(Diagnostic::blocks_export) {
+        return Err(ExportError::Diagnostics(diagnostics));
+    }
+
+    let generated_files = render_enabled_backends(&registry, &config)?;
+    let writer_files = strip_output_root(&generated_files, &config)?;
+    let output_root = output_root(&options.config_path, &config);
+    let files = writer_files
+        .files()
+        .iter()
+        .map(|file| output_root.join(file.relative_path().as_str()))
+        .collect();
+
+    Ok(ExportReport {
+        registry,
+        files,
+        diagnostics,
+    })
+}
+
 fn load_config(options: &ExportOptions) -> Result<(Config, String), ExportError> {
     let input = fs::read_to_string(&options.config_path).map_err(|source| {
         ExportError::Config(ConfigError::Read {
@@ -280,6 +309,31 @@ enabled = false
         .unwrap();
 
         assert_eq!(report.files.len(), 2);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn plan_with_roots_validates_and_plans_without_writing_files() {
+        let root = temp_project();
+        let config_path = write_config(&root);
+        let generated = root.join("generated");
+
+        let report = plan_with_roots(
+            ExportOptions::new(config_path.clone()),
+            [RootDescriptor::new::<SimpleDto>()],
+        )
+        .unwrap();
+
+        assert_eq!(report.registry.roots.len(), 1);
+        assert!(
+            report
+                .files
+                .iter()
+                .any(|path| path.ends_with("simple_dto.ts")),
+            "expected planned TypeScript DTO file"
+        );
+        assert!(!generated.exists());
 
         fs::remove_dir_all(root).unwrap();
     }
