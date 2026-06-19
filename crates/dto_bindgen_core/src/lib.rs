@@ -39,9 +39,12 @@ pub use generated::{
 };
 pub use identity::{GeneratedFileId, Namespace, RustTypeId, TargetTypeName, TypeId};
 pub use inventory::{
-    InventoryAttribute, InventoryField, InventoryFinding, InventoryItem, InventoryItemKind,
-    InventoryLocation, InventoryScanError, InventorySeverity, InventoryTypeClass, InventoryVariant,
-    SourceInventory, scan_rust_source,
+    InventoryAttrUsage, InventoryAttribute, InventoryField, InventoryFieldUsage, InventoryFinding,
+    InventoryItem, InventoryItemKind, InventoryLocation, InventoryManifest, InventoryManifestError,
+    InventoryManifestSdk, InventoryManifestTarget, InventoryPromotions, InventoryReport,
+    InventorySdkReport, InventorySerdeReport, InventorySeverity, InventoryTargetReport,
+    InventoryTypeClass, InventoryTypesReport, InventoryVariant, PromotionDecision, SourceInventory,
+    build_inventory_report, render_inventory_json, render_inventory_markdown, scan_rust_source,
 };
 pub use registry::Registry;
 pub use source::{SourceFile, SourcePosition, SourceSpan};

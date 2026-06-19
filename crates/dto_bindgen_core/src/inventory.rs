@@ -1,5 +1,5 @@
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use quote::ToTokens;
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,619 @@ use syn::{
     Attribute, Expr, ExprLit, Fields, GenericArgument, Item, ItemEnum, ItemStruct, Lit, Meta,
     PathArguments, Type, punctuated::Punctuated,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InventoryManifest {
+    pub sdk: InventoryManifestSdk,
+    pub roots: Vec<String>,
+    pub typescript: InventoryManifestTarget,
+    pub python: InventoryManifestTarget,
+}
+
+impl InventoryManifest {
+    pub fn from_toml_str(input: &str) -> Result<Self, InventoryManifestError> {
+        toml::from_str(input).map_err(|source| InventoryManifestError {
+            message: source.to_string(),
+        })
+    }
+
+    pub fn from_toml_path(
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, InventoryManifestError> {
+        let input =
+            std::fs::read_to_string(path.as_ref()).map_err(|source| InventoryManifestError {
+                message: source.to_string(),
+            })?;
+        Self::from_toml_str(&input)
+    }
+}
+
+impl Default for InventoryManifest {
+    fn default() -> Self {
+        Self {
+            sdk: InventoryManifestSdk::default(),
+            roots: Vec::new(),
+            typescript: InventoryManifestTarget {
+                package_shape: BTreeMap::from([
+                    ("emit".to_owned(), "ts".to_owned()),
+                    ("module_resolution".to_owned(), "bundler".to_owned()),
+                ]),
+                generated_artifact_policy: "unknown".to_owned(),
+            },
+            python: InventoryManifestTarget {
+                package_shape: BTreeMap::new(),
+                generated_artifact_policy: "unknown".to_owned(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InventoryManifestSdk {
+    pub root: String,
+    pub package: String,
+    pub source_files: Vec<String>,
+}
+
+impl Default for InventoryManifestSdk {
+    fn default() -> Self {
+        Self {
+            root: ".".to_owned(),
+            package: String::new(),
+            source_files: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InventoryManifestTarget {
+    pub package_shape: BTreeMap<String, String>,
+    pub generated_artifact_policy: String,
+}
+
+impl Default for InventoryManifestTarget {
+    fn default() -> Self {
+        Self {
+            package_shape: BTreeMap::new(),
+            generated_artifact_policy: "unknown".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryManifestError {
+    pub message: String,
+}
+
+impl fmt::Display for InventoryManifestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to load inventory manifest: {}", self.message)
+    }
+}
+
+impl std::error::Error for InventoryManifestError {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InventoryReport {
+    pub schema_version: u32,
+    pub generator: String,
+    pub sdk: InventorySdkReport,
+    pub roots: Vec<String>,
+    pub serde: InventorySerdeReport,
+    pub types: InventoryTypesReport,
+    pub typescript: InventoryTargetReport,
+    pub python: InventoryTargetReport,
+    pub diagnostics: Vec<InventoryFinding>,
+    pub promotions: InventoryPromotions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InventorySdkReport {
+    pub root: String,
+    pub package: String,
+    pub source_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct InventorySerdeReport {
+    pub supported_attrs: Vec<InventoryAttrUsage>,
+    pub unsupported_attrs: Vec<InventoryAttrUsage>,
+    pub default_usage: Vec<InventoryAttrUsage>,
+    pub skipped_fields: Vec<InventoryFieldUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct InventoryTypesReport {
+    pub large_integer_fields: Vec<InventoryFieldUsage>,
+    pub third_party_fields: Vec<InventoryFieldUsage>,
+    pub custom_fields_without_dto: Vec<InventoryFieldUsage>,
+    pub generic_dtos: Vec<String>,
+    pub unsupported_shapes: Vec<InventoryFinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InventoryTargetReport {
+    pub package_shape: BTreeMap<String, String>,
+    pub generated_artifact_policy: String,
+    pub ts_rs: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct InventoryPromotions {
+    pub required: Vec<PromotionDecision>,
+    pub deferred: Vec<PromotionDecision>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PromotionDecision {
+    pub feature: String,
+    pub decision: String,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InventoryAttrUsage {
+    pub location: InventoryLocation,
+    pub type_name: String,
+    pub field_name: Option<String>,
+    pub variant_name: Option<String>,
+    pub namespace: String,
+    pub name: String,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InventoryFieldUsage {
+    pub location: InventoryLocation,
+    pub type_name: String,
+    pub field_name: String,
+    pub variant_name: Option<String>,
+    pub rust_type: String,
+    pub evidence: String,
+}
+
+pub fn build_inventory_report(
+    manifest: InventoryManifest,
+    inventories: Vec<SourceInventory>,
+) -> InventoryReport {
+    let mut sdk_source_files = manifest.sdk.source_files.clone();
+    if sdk_source_files.is_empty() {
+        sdk_source_files = inventories
+            .iter()
+            .map(|inventory| inventory.source_file.clone())
+            .collect();
+    }
+    sdk_source_files.sort();
+    sdk_source_files.dedup();
+
+    let mut report = InventoryReport {
+        schema_version: 1,
+        generator: "dto_bindgen".to_owned(),
+        sdk: InventorySdkReport {
+            root: manifest.sdk.root,
+            package: manifest.sdk.package,
+            source_files: sdk_source_files,
+        },
+        roots: sorted_unique(manifest.roots),
+        serde: InventorySerdeReport::default(),
+        types: InventoryTypesReport::default(),
+        typescript: InventoryTargetReport {
+            package_shape: manifest.typescript.package_shape,
+            generated_artifact_policy: manifest.typescript.generated_artifact_policy,
+            ts_rs: BTreeMap::new(),
+        },
+        python: InventoryTargetReport {
+            package_shape: manifest.python.package_shape,
+            generated_artifact_policy: manifest.python.generated_artifact_policy,
+            ts_rs: BTreeMap::new(),
+        },
+        diagnostics: Vec::new(),
+        promotions: InventoryPromotions::default(),
+    };
+
+    for inventory in inventories {
+        report.diagnostics.extend(inventory.findings.clone());
+        collect_report_items(&inventory, &mut report);
+    }
+
+    sort_report(&mut report);
+    report.promotions.deferred = deferred_promotions(&report);
+    report
+}
+
+pub fn render_inventory_json(report: &InventoryReport) -> Result<String, serde_json::Error> {
+    let mut output = serde_json::to_string_pretty(report)?;
+    output.push('\n');
+    Ok(output)
+}
+
+pub fn render_inventory_markdown(report: &InventoryReport) -> String {
+    let mut output = String::new();
+
+    output.push_str("# SDK Inventory Pilot Report\n\n");
+    output.push_str("## SDK\n\n");
+    output.push_str(&format!("- Root: `{}`\n", report.sdk.root));
+    output.push_str(&format!("- Package: `{}`\n", report.sdk.package));
+    output.push_str(&format!(
+        "- Source files: {}\n\n",
+        report.sdk.source_files.len()
+    ));
+
+    output.push_str("## Roots\n\n");
+    if report.roots.is_empty() {
+        output.push_str("- No explicit roots declared.\n\n");
+    } else {
+        for root in &report.roots {
+            output.push_str(&format!("- `{root}`\n"));
+        }
+        output.push('\n');
+    }
+
+    output.push_str("## Serde\n\n");
+    output.push_str(&format!(
+        "- Supported attrs: {}\n",
+        report.serde.supported_attrs.len()
+    ));
+    output.push_str(&format!(
+        "- Unsupported attrs: {}\n",
+        report.serde.unsupported_attrs.len()
+    ));
+    output.push_str(&format!(
+        "- Defaults: {}\n",
+        report.serde.default_usage.len()
+    ));
+    output.push_str(&format!(
+        "- Skipped fields: {}\n\n",
+        report.serde.skipped_fields.len()
+    ));
+
+    output.push_str("## Types\n\n");
+    output.push_str(&format!(
+        "- Large integer fields: {}\n",
+        report.types.large_integer_fields.len()
+    ));
+    output.push_str(&format!(
+        "- Third-party fields: {}\n",
+        report.types.third_party_fields.len()
+    ));
+    output.push_str(&format!(
+        "- Custom field candidates: {}\n",
+        report.types.custom_fields_without_dto.len()
+    ));
+    output.push_str(&format!(
+        "- Generic DTOs: {}\n",
+        report.types.generic_dtos.len()
+    ));
+    output.push_str(&format!(
+        "- Unsupported shapes: {}\n\n",
+        report.types.unsupported_shapes.len()
+    ));
+
+    output.push_str("## TypeScript\n\n");
+    output.push_str(&format!(
+        "- Artifact policy: `{}`\n",
+        report.typescript.generated_artifact_policy
+    ));
+    output.push_str(&format!(
+        "- Package shape keys: {}\n\n",
+        report.typescript.package_shape.len()
+    ));
+
+    output.push_str("## Python\n\n");
+    output.push_str(&format!(
+        "- Artifact policy: `{}`\n",
+        report.python.generated_artifact_policy
+    ));
+    output.push_str(&format!(
+        "- Package shape keys: {}\n\n",
+        report.python.package_shape.len()
+    ));
+
+    output.push_str("## Diagnostics\n\n");
+    if report.diagnostics.is_empty() {
+        output.push_str("- No inventory diagnostics.\n\n");
+    } else {
+        for diagnostic in &report.diagnostics {
+            output.push_str(&format!(
+                "- `{}` {:?}: {} at {}:{}\n",
+                diagnostic.code,
+                diagnostic.severity,
+                diagnostic.message,
+                diagnostic.location.file,
+                diagnostic.location.line
+            ));
+        }
+        output.push('\n');
+    }
+
+    output.push_str("## Promotion Decisions\n\n");
+    output.push_str("| Feature | Decision | Evidence |\n");
+    output.push_str("|---|---|---|\n");
+    if report.promotions.required.is_empty() && report.promotions.deferred.is_empty() {
+        output.push_str("| none | deferred | no inventory evidence |\n");
+    } else {
+        for decision in report
+            .promotions
+            .required
+            .iter()
+            .chain(report.promotions.deferred.iter())
+        {
+            output.push_str(&format!(
+                "| {} | {} | {} |\n",
+                markdown_cell(&decision.feature),
+                markdown_cell(&decision.decision),
+                markdown_cell(&decision.evidence)
+            ));
+        }
+    }
+
+    output
+}
+
+fn collect_report_items(inventory: &SourceInventory, report: &mut InventoryReport) {
+    for item in &inventory.items {
+        for attr in &item.attrs {
+            let usage = attr_usage(item, None, None, attr);
+            if attr.supported {
+                report.serde.supported_attrs.push(usage.clone());
+            } else {
+                report.serde.unsupported_attrs.push(usage.clone());
+            }
+            if attr.namespace == "serde" && attr.name == "default" {
+                report.serde.default_usage.push(usage);
+            }
+        }
+
+        if !item.generics.is_empty() {
+            report.types.generic_dtos.push(item.rust_name.clone());
+        }
+
+        for field in &item.fields {
+            collect_field_usage(&item.rust_name, None, field, report);
+        }
+
+        for variant in &item.variants {
+            for attr in &variant.attrs {
+                let usage = attr_usage(item, Some(variant), None, attr);
+                if attr.supported {
+                    report.serde.supported_attrs.push(usage);
+                } else {
+                    report.serde.unsupported_attrs.push(usage);
+                }
+            }
+
+            for field in &variant.fields {
+                collect_field_usage(&item.rust_name, Some(&variant.rust_name), field, report);
+            }
+        }
+    }
+
+    report.types.unsupported_shapes.extend(
+        inventory
+            .findings
+            .iter()
+            .filter(|finding| {
+                matches!(
+                    finding.code.as_str(),
+                    "INV1002" | "INV1003" | "INV1004" | "INV1005"
+                )
+            })
+            .cloned(),
+    );
+}
+
+fn collect_field_usage(
+    type_name: &str,
+    variant_name: Option<&str>,
+    field: &InventoryField,
+    report: &mut InventoryReport,
+) {
+    for attr in &field.attrs {
+        let usage = InventoryAttrUsage {
+            location: attr.location.clone(),
+            type_name: type_name.to_owned(),
+            field_name: Some(field.rust_name.clone()),
+            variant_name: variant_name.map(str::to_owned),
+            namespace: attr.namespace.clone(),
+            name: attr.name.clone(),
+            value: attr.value.clone(),
+        };
+        if attr.supported {
+            report.serde.supported_attrs.push(usage.clone());
+        } else {
+            report.serde.unsupported_attrs.push(usage.clone());
+        }
+        if attr.namespace == "serde" && attr.name == "default" {
+            report.serde.default_usage.push(usage);
+        }
+    }
+
+    if field.skipped {
+        report.serde.skipped_fields.push(field_usage(
+            type_name,
+            variant_name,
+            field,
+            "field is skipped by serde or dto metadata",
+        ));
+    }
+
+    for class in &field.classes {
+        match class {
+            InventoryTypeClass::LargeInteger { rust_type } => {
+                report.types.large_integer_fields.push(field_usage(
+                    type_name,
+                    variant_name,
+                    field,
+                    &format!("large integer `{rust_type}` requires explicit numeric policy"),
+                ));
+            }
+            InventoryTypeClass::ThirdParty { family, rust_type } => {
+                report.types.third_party_fields.push(field_usage(
+                    type_name,
+                    variant_name,
+                    field,
+                    &format!("third-party `{rust_type}` from `{family}` requires promotion review"),
+                ));
+            }
+            InventoryTypeClass::CustomCandidate { rust_type } => {
+                report.types.custom_fields_without_dto.push(field_usage(
+                    type_name,
+                    variant_name,
+                    field,
+                    &format!("custom candidate `{rust_type}` may need a `Dto` descriptor"),
+                ));
+            }
+        }
+    }
+}
+
+fn attr_usage(
+    item: &InventoryItem,
+    variant: Option<&InventoryVariant>,
+    field: Option<&InventoryField>,
+    attr: &InventoryAttribute,
+) -> InventoryAttrUsage {
+    InventoryAttrUsage {
+        location: attr.location.clone(),
+        type_name: item.rust_name.clone(),
+        field_name: field.map(|field| field.rust_name.clone()),
+        variant_name: variant.map(|variant| variant.rust_name.clone()),
+        namespace: attr.namespace.clone(),
+        name: attr.name.clone(),
+        value: attr.value.clone(),
+    }
+}
+
+fn field_usage(
+    type_name: &str,
+    variant_name: Option<&str>,
+    field: &InventoryField,
+    evidence: &str,
+) -> InventoryFieldUsage {
+    InventoryFieldUsage {
+        location: field.location.clone(),
+        type_name: type_name.to_owned(),
+        field_name: field.rust_name.clone(),
+        variant_name: variant_name.map(str::to_owned),
+        rust_type: field.type_name.clone(),
+        evidence: evidence.to_owned(),
+    }
+}
+
+fn sort_report(report: &mut InventoryReport) {
+    report.serde.supported_attrs.sort_by(attr_usage_order);
+    report.serde.supported_attrs.dedup();
+    report.serde.unsupported_attrs.sort_by(attr_usage_order);
+    report.serde.unsupported_attrs.dedup();
+    report.serde.default_usage.sort_by(attr_usage_order);
+    report.serde.default_usage.dedup();
+    report.serde.skipped_fields.sort_by(field_usage_order);
+    report.serde.skipped_fields.dedup();
+    report.types.large_integer_fields.sort_by(field_usage_order);
+    report.types.large_integer_fields.dedup();
+    report.types.third_party_fields.sort_by(field_usage_order);
+    report.types.third_party_fields.dedup();
+    report
+        .types
+        .custom_fields_without_dto
+        .sort_by(field_usage_order);
+    report.types.custom_fields_without_dto.dedup();
+    report.types.generic_dtos.sort();
+    report.types.generic_dtos.dedup();
+    report.types.unsupported_shapes.sort_by(finding_order);
+    report.types.unsupported_shapes.dedup();
+    report.diagnostics.sort_by(finding_order);
+    report.diagnostics.dedup();
+}
+
+fn attr_usage_order(left: &InventoryAttrUsage, right: &InventoryAttrUsage) -> std::cmp::Ordering {
+    left.location
+        .file
+        .cmp(&right.location.file)
+        .then_with(|| left.location.line.cmp(&right.location.line))
+        .then_with(|| left.location.column.cmp(&right.location.column))
+        .then_with(|| left.type_name.cmp(&right.type_name))
+        .then_with(|| left.variant_name.cmp(&right.variant_name))
+        .then_with(|| left.field_name.cmp(&right.field_name))
+        .then_with(|| left.namespace.cmp(&right.namespace))
+        .then_with(|| left.name.cmp(&right.name))
+}
+
+fn field_usage_order(
+    left: &InventoryFieldUsage,
+    right: &InventoryFieldUsage,
+) -> std::cmp::Ordering {
+    left.location
+        .file
+        .cmp(&right.location.file)
+        .then_with(|| left.location.line.cmp(&right.location.line))
+        .then_with(|| left.location.column.cmp(&right.location.column))
+        .then_with(|| left.type_name.cmp(&right.type_name))
+        .then_with(|| left.variant_name.cmp(&right.variant_name))
+        .then_with(|| left.field_name.cmp(&right.field_name))
+        .then_with(|| left.rust_type.cmp(&right.rust_type))
+}
+
+fn finding_order(left: &InventoryFinding, right: &InventoryFinding) -> std::cmp::Ordering {
+    left.location
+        .file
+        .cmp(&right.location.file)
+        .then_with(|| left.location.line.cmp(&right.location.line))
+        .then_with(|| left.location.column.cmp(&right.location.column))
+        .then_with(|| left.code.cmp(&right.code))
+        .then_with(|| left.type_name.cmp(&right.type_name))
+        .then_with(|| left.variant_name.cmp(&right.variant_name))
+        .then_with(|| left.field_name.cmp(&right.field_name))
+        .then_with(|| left.attribute.cmp(&right.attribute))
+}
+
+fn deferred_promotions(report: &InventoryReport) -> Vec<PromotionDecision> {
+    let mut decisions = BTreeSet::new();
+
+    for attr in &report.serde.unsupported_attrs {
+        decisions.insert(PromotionDecision {
+            feature: format!("{}::{}", attr.namespace, attr.name),
+            decision: "deferred_until_required".to_owned(),
+            evidence: format!("{}:{}", attr.location.file, attr.location.line),
+        });
+    }
+    for field in &report.types.third_party_fields {
+        decisions.insert(PromotionDecision {
+            feature: format!("third_party_type:{}", field.rust_type),
+            decision: "deferred_until_required".to_owned(),
+            evidence: format!("{}::{}", field.type_name, field.field_name),
+        });
+    }
+    for field in &report.types.custom_fields_without_dto {
+        decisions.insert(PromotionDecision {
+            feature: format!("custom_type:{}", field.rust_type),
+            decision: "review_descriptor".to_owned(),
+            evidence: format!("{}::{}", field.type_name, field.field_name),
+        });
+    }
+    for type_name in &report.types.generic_dtos {
+        decisions.insert(PromotionDecision {
+            feature: "generic_dtos".to_owned(),
+            decision: "deferred_until_required".to_owned(),
+            evidence: type_name.clone(),
+        });
+    }
+
+    decisions.into_iter().collect()
+}
+
+fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceInventory {
@@ -954,5 +1567,88 @@ mod tests {
         assert!(inventory.findings.iter().any(|finding| {
             finding.code == "INV0300" && finding.attribute.as_deref() == Some("serde::default")
         }));
+    }
+
+    #[test]
+    fn builds_deterministic_inventory_reports_from_manifest() {
+        let manifest = InventoryManifest::from_toml_str(
+            r#"
+            roots = ["UserProfile"]
+
+            [sdk]
+            root = "."
+            package = "sdk"
+            source_files = ["src/sdk.rs"]
+
+            [typescript]
+            generated_artifact_policy = "checked_in"
+
+            [typescript.package_shape]
+            package = "sdk"
+            out_dir = "generated/ts"
+            emit = "ts"
+
+            [python]
+            generated_artifact_policy = "build_time"
+
+            [python.package_shape]
+            package = "sdk_dto"
+            out_dir = "generated/python/sdk_dto"
+            "#,
+        )
+        .unwrap();
+        let inventory = scan_rust_source(
+            "src/sdk.rs",
+            r#"
+            #[derive(Serialize, Dto)]
+            struct UserProfile {
+                #[serde(skip)]
+                internal_note: String,
+                id: uuid::Uuid,
+                balance: u128,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let report = build_inventory_report(manifest, vec![inventory]);
+        let first_json = render_inventory_json(&report).unwrap();
+        let second_json = render_inventory_json(&report).unwrap();
+
+        assert_eq!(first_json, second_json);
+        assert!(first_json.contains("\"schema_version\": 1"));
+        assert_eq!(report.serde.skipped_fields.len(), 1);
+        assert_eq!(report.types.third_party_fields.len(), 1);
+        assert_eq!(report.types.large_integer_fields.len(), 1);
+        assert!(
+            report
+                .promotions
+                .deferred
+                .iter()
+                .any(|decision| decision.feature.contains("uuid"))
+        );
+    }
+
+    #[test]
+    fn renders_markdown_report_with_promotion_decisions() {
+        let manifest = InventoryManifest::default();
+        let inventory = scan_rust_source(
+            "src/sdk.rs",
+            r#"
+            #[derive(Serialize, Dto)]
+            struct UserProfile {
+                #[serde(flatten)]
+                metadata: serde_json::Value,
+            }
+            "#,
+        )
+        .unwrap();
+        let report = build_inventory_report(manifest, vec![inventory]);
+        let markdown = render_inventory_markdown(&report);
+
+        assert!(markdown.contains("# SDK Inventory Pilot Report"));
+        assert!(markdown.contains("## Promotion Decisions"));
+        assert!(markdown.trim_end().lines().last().unwrap().starts_with('|'));
+        assert!(markdown.contains("serde::flatten"));
     }
 }
