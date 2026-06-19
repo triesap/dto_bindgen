@@ -57,6 +57,37 @@ struct EventEnvelope {
     event: SdkEvent,
 }
 
+#[derive(Clone, Serialize, Dto)]
+#[serde(rename_all = "camelCase")]
+struct PackEntry {
+    kind: String,
+    url: String,
+    size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeWebPackAsset {
+    locale: String,
+    url: String,
+    kind: String,
+    hash: String,
+    size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+#[serde(rename_all = "camelCase")]
+struct Manifest {
+    schema: u32,
+    mf2_packs: BTreeMap<String, PackEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budgets: Option<BTreeMap<String, u64>>,
+}
+
 #[test]
 fn serde_fixtures_match_supported_wire_shapes() {
     let profile = user_profile();
@@ -68,6 +99,7 @@ fn serde_fixtures_match_supported_wire_shapes() {
         source: "fixture".to_owned(),
         event,
     };
+    let manifest = manifest_fixture();
 
     assert_eq!(
         serde_json::to_value(&profile).unwrap(),
@@ -130,6 +162,22 @@ fn serde_fixtures_match_supported_wire_shapes() {
             }
         })
     );
+    assert_eq!(
+        serde_json::to_value(&manifest).unwrap(),
+        json!({
+            "schema": 1,
+            "mf2Packs": {
+                "en": {
+                    "kind": "base",
+                    "url": "packs/en.mf2pack",
+                    "size": 42
+                }
+            },
+            "budgets": {
+                "initial": 4096
+            }
+        })
+    );
 }
 
 #[test]
@@ -145,11 +193,18 @@ fn export_is_byte_deterministic_for_generated_fixture() {
     assert_eq!(first, second);
     assert!(first.contains_key("dto_bindgen.generated.json"));
     assert!(first.contains_key("ts/user_profile.ts"));
+    assert!(first.contains_key("ts/manifest.ts"));
     assert!(first.contains_key("python/my_sdk_dto/user_profile.py"));
+    assert!(first.contains_key("python/my_sdk_dto/manifest.py"));
     let user_ts = String::from_utf8(first["ts/user_profile.ts"].clone()).unwrap();
     assert!(user_ts.contains("displayName?: string | null;"));
     assert!(user_ts.contains("aliases?: Array<string>;"));
     assert!(user_ts.contains("preferences?: Record<string, string>;"));
+    let pack_ts = String::from_utf8(first["ts/pack_entry.ts"].clone()).unwrap();
+    assert!(pack_ts.contains("size: number;"));
+    assert!(pack_ts.contains("parent?: string | null;"));
+    let manifest_ts = String::from_utf8(first["ts/manifest.ts"].clone()).unwrap();
+    assert!(manifest_ts.contains("budgets?: Record<string, number> | null;"));
     let user_py = String::from_utf8(first["python/my_sdk_dto/user_profile.py"].clone()).unwrap();
     assert!(user_py.contains("display_name: str | None = field(default=None"));
     assert!(user_py.contains("aliases: list[str] = field(default_factory=list"));
@@ -162,6 +217,10 @@ fn export_is_byte_deterministic_for_generated_fixture() {
         String::from_utf8(first["python/my_sdk_dto/event_envelope.py"].clone()).unwrap();
     assert!(envelope_py.contains("from .sdk_event import SdkEvent, parse_sdk_event"));
     assert!(envelope_py.contains("parse_sdk_event(data[\"event\"])"));
+    let manifest_py = String::from_utf8(first["python/my_sdk_dto/manifest.py"].clone()).unwrap();
+    assert!(manifest_py.contains("budgets: dict[str, int] | None"));
+    assert!(manifest_py.contains("data.get(\"budgets\")"));
+    assert!(manifest_py.contains("if self.budgets is not None"));
 }
 
 #[test]
@@ -187,7 +246,7 @@ import sys
 
 sys.path.insert(0, {python_root_literal})
 
-from my_sdk_dto import EventEnvelope, PostalAddress, UserProfile, UserRole
+from my_sdk_dto import EventEnvelope, Manifest, PackEntry, PostalAddress, UserProfile, UserRole
 from my_sdk_dto.sdk_event import SdkEventUserCreated, parse_sdk_event
 
 profile_data = {{
@@ -244,6 +303,23 @@ envelope = EventEnvelope.from_dict(envelope_data)
 assert isinstance(envelope.event, SdkEventUserCreated)
 assert envelope.to_dict() == envelope_data
 
+manifest_data = {{
+    "schema": 1,
+    "mf2Packs": {{
+        "en": {{
+            "kind": "base",
+            "url": "packs/en.mf2pack",
+            "size": 42,
+        }},
+    }},
+    "budgets": {{"initial": 4096}},
+}}
+manifest = Manifest.from_dict(manifest_data)
+assert isinstance(manifest.mf2_packs["en"], PackEntry)
+assert manifest.mf2_packs["en"].size == 42
+assert manifest.budgets == {{"initial": 4096}}
+assert manifest.to_dict() == manifest_data
+
 try:
     UserProfile.from_dict({{**profile_data, "extra": True}})
 except Exception as exc:
@@ -290,6 +366,27 @@ fn user_profile() -> UserProfile {
     }
 }
 
+fn manifest_fixture() -> Manifest {
+    let mut mf2_packs = BTreeMap::new();
+    mf2_packs.insert(
+        "en".to_owned(),
+        PackEntry {
+            kind: "base".to_owned(),
+            url: "packs/en.mf2pack".to_owned(),
+            size: 42,
+            parent: None,
+        },
+    );
+    let mut budgets = BTreeMap::new();
+    budgets.insert("initial".to_owned(), 4096);
+
+    Manifest {
+        schema: 1,
+        mf2_packs,
+        budgets: Some(budgets),
+    }
+}
+
 fn export_fixture(config_path: &Path) -> dto_bindgen::export::ExportReport {
     dto_bindgen::export_types!(
         config = config_path,
@@ -298,7 +395,10 @@ fn export_fixture(config_path: &Path) -> dto_bindgen::export::ExportReport {
             UserRole,
             UserProfile,
             SdkEvent,
-            EventEnvelope
+            EventEnvelope,
+            PackEntry,
+            RuntimeWebPackAsset,
+            Manifest
         ],
     )
     .unwrap()
@@ -311,6 +411,9 @@ fn write_config(root: &Path) -> PathBuf {
         r#"
 [export]
 out_dir = "generated"
+
+[numeric]
+large_int_policy = "json_number_unsafe"
 
 [typescript]
 enabled = true
