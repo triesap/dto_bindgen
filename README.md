@@ -96,7 +96,7 @@ Rust/Serde support:
 - fieldless external enums
 - internally tagged enum struct variants
 - adjacently tagged enum struct variants
-- `rename`, `rename_all`, `rename_all_fields`, `deny_unknown_fields`
+- `rename`, `rename_all`, `rename_all_fields`, `deny_unknown_fields`, and bare container `default` for supported field defaults
 - field `rename`, `skip`, and built-in `default` for `Option<T>`, `String`, `bool`, numeric types, `Vec<T>`, and string-keyed maps
 - primitives, `Option<T>`, `Vec<T>`, arrays, string-keyed maps, and named DTO references
 

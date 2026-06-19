@@ -77,6 +77,17 @@ struct PresenceDefaults {
     note: String,
 }
 
+#[allow(dead_code)]
+#[derive(Dto)]
+#[serde(default)]
+struct ContainerDefaults {
+    display_name: Option<String>,
+    tags: Vec<String>,
+    active: bool,
+    retry_count: u32,
+    note: String,
+}
+
 #[test]
 fn derives_named_struct_descriptors() {
     let registry = export::build_registry([export::RootDescriptor::new::<UserProfile>()]);
@@ -272,6 +283,48 @@ fn derives_option_and_builtin_default_presence() {
 
     let tags = struct_field(def, "tags").unwrap();
     assert!(!tags.presence.required_on_deserialize);
+    assert_eq!(
+        tags.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::EmptyVec)
+    );
+
+    let active = struct_field(def, "active").unwrap();
+    assert_eq!(
+        active.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::BoolFalse)
+    );
+
+    let retry_count = struct_field(def, "retry_count").unwrap();
+    assert_eq!(
+        retry_count.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::NumericZero)
+    );
+
+    let note = struct_field(def, "note").unwrap();
+    assert_eq!(
+        note.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::EmptyString)
+    );
+}
+
+#[test]
+fn derives_container_default_presence_for_supported_field_types() {
+    let registry = export::build_registry([export::RootDescriptor::new::<ContainerDefaults>()]);
+
+    assert!(registry.diagnostics.is_empty());
+    let root = *registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Struct(def) = registry.type_def(root).unwrap() else {
+        panic!("expected presence struct");
+    };
+
+    let display_name = struct_field(def, "display_name").unwrap();
+    assert!(!display_name.presence.required_on_deserialize);
+    assert_eq!(
+        display_name.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::NoneValue)
+    );
+
+    let tags = struct_field(def, "tags").unwrap();
     assert_eq!(
         tags.presence.default,
         Some(dto_bindgen::__private::DefaultKind::EmptyVec)

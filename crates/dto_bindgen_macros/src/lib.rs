@@ -277,7 +277,7 @@ fn expand_struct(
             &wire_name,
             &ty,
             field_attrs.int_repr,
-            field_attrs.default,
+            field_attrs.default || container_attrs.default,
         )?;
         field_tokens.push(quote! {
             let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
@@ -365,6 +365,7 @@ struct StructContainerAttrs {
     rename: Option<String>,
     rename_all: Option<String>,
     deny_unknown_fields: bool,
+    default: bool,
 }
 
 impl StructContainerAttrs {
@@ -395,6 +396,16 @@ impl StructContainerAttrs {
                 } else if meta.path.is_ident("deny_unknown_fields") {
                     parsed.deny_unknown_fields = true;
                     Ok(())
+                } else if meta.path.is_ident("default") {
+                    if meta.input.peek(Token![=]) {
+                        let _ = parse_string_value(&meta)?;
+                        Err(meta.error(
+                            "custom serde container default paths are unsupported for `Dto` derive",
+                        ))
+                    } else {
+                        parsed.default = true;
+                        Ok(())
+                    }
                 } else {
                     Err(meta.error("unsupported serde container attribute for `Dto` derive"))
                 }
@@ -823,10 +834,41 @@ mod tests {
     }
 
     #[test]
+    fn rejects_custom_container_default_paths() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[serde(default = "fallback")]
+            struct Metadata {
+                values: Vec<String>,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("custom serde container default paths")
+        );
+    }
+
+    #[test]
     fn rejects_default_for_unmapped_field_types() {
         let input: DeriveInput = syn::parse_quote! {
             struct Metadata {
                 #[serde(default)]
+                nested: PostalAddress,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("serde(default) is supported only"));
+    }
+
+    #[test]
+    fn rejects_container_default_for_unmapped_field_types() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[serde(default)]
+            struct Metadata {
                 nested: PostalAddress,
             }
         };
