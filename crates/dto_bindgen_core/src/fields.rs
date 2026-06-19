@@ -96,6 +96,15 @@ impl FieldPresence {
         }
     }
 
+    pub const fn optional_nullable() -> Self {
+        Self {
+            nullable: true,
+            required_on_deserialize: false,
+            default: Some(DefaultKind::NoneValue),
+            serialize_presence: SerializePresence::Always,
+        }
+    }
+
     pub const fn defaulted(default: DefaultKind) -> Self {
         Self {
             nullable: false,
@@ -122,6 +131,7 @@ impl FieldPresence {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DefaultKind {
     NoneValue,
+    EmptyString,
     EmptyVec,
     EmptyMap,
     BoolFalse,
@@ -175,6 +185,15 @@ mod tests {
         assert!(!presence.required_on_deserialize);
         assert_eq!(presence.default, Some(DefaultKind::EmptyVec));
         assert!(presence.is_serialized());
+    }
+
+    #[test]
+    fn optional_nullable_presence_allows_missing_nulls() {
+        let presence = FieldPresence::optional_nullable();
+        assert!(presence.nullable);
+        assert!(!presence.required_on_deserialize);
+        assert_eq!(presence.default, Some(DefaultKind::NoneValue));
+        assert_eq!(presence.serialize_presence, SerializePresence::Always);
     }
 
     #[test]

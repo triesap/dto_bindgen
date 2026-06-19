@@ -63,6 +63,20 @@ struct UnannotatedLedgerEntry {
     amount_minor_units: u128,
 }
 
+#[allow(dead_code)]
+#[derive(Dto)]
+struct PresenceDefaults {
+    display_name: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    active: bool,
+    #[serde(default)]
+    retry_count: u32,
+    #[serde(default)]
+    note: String,
+}
+
 #[test]
 fn derives_named_struct_descriptors() {
     let registry = export::build_registry([export::RootDescriptor::new::<UserProfile>()]);
@@ -203,6 +217,50 @@ fn dto_int_repr_satisfies_large_integer_policy() {
 }
 
 #[test]
+fn derives_option_and_builtin_default_presence() {
+    let registry = export::build_registry([export::RootDescriptor::new::<PresenceDefaults>()]);
+
+    assert!(registry.diagnostics.is_empty());
+    let root = *registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Struct(def) = registry.type_def(root).unwrap() else {
+        panic!("expected presence struct");
+    };
+
+    let display_name = struct_field(def, "display_name").unwrap();
+    assert!(display_name.presence.nullable);
+    assert!(!display_name.presence.required_on_deserialize);
+    assert_eq!(
+        display_name.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::NoneValue)
+    );
+
+    let tags = struct_field(def, "tags").unwrap();
+    assert!(!tags.presence.required_on_deserialize);
+    assert_eq!(
+        tags.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::EmptyVec)
+    );
+
+    let active = struct_field(def, "active").unwrap();
+    assert_eq!(
+        active.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::BoolFalse)
+    );
+
+    let retry_count = struct_field(def, "retry_count").unwrap();
+    assert_eq!(
+        retry_count.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::NumericZero)
+    );
+
+    let note = struct_field(def, "note").unwrap();
+    assert_eq!(
+        note.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::EmptyString)
+    );
+}
+
+#[test]
 fn export_types_macro_returns_blocking_diagnostics() {
     let config_path = temp_config("");
 
@@ -241,10 +299,16 @@ fn cleanup_config(path: &std::path::Path) {
 }
 
 fn wire_field<'a>(def: &'a dto_bindgen::__private::StructDef, name: &str) -> Option<&'a str> {
+    struct_field(def, name).map(|field| field.wire.serialize_name.as_str())
+}
+
+fn struct_field<'a>(
+    def: &'a dto_bindgen::__private::StructDef,
+    name: &str,
+) -> Option<&'a dto_bindgen::__private::FieldDef> {
     def.fields
         .iter()
         .find(|field| field.rust_name.as_str() == name)
-        .map(|field| field.wire.serialize_name.as_str())
 }
 
 fn variant_wire_name<'a>(def: &'a dto_bindgen::__private::EnumDef, name: &str) -> Option<&'a str> {

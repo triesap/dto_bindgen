@@ -4,9 +4,9 @@
 use std::collections::BTreeMap;
 
 use dto_bindgen_core::{
-    Backend, BackendError, BackendId, Config, Diagnostic, DiagnosticCode, EnumDef, EnumRepr,
-    FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry, SerializePresence,
-    StructDef, TypeDef, TypeId, TypeRef, VariantShape,
+    Backend, BackendError, BackendId, Config, DefaultKind, Diagnostic, DiagnosticCode, EnumDef,
+    EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry,
+    SerializePresence, StructDef, TypeDef, TypeId, TypeRef, VariantShape,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -170,13 +170,7 @@ fn render_struct(
         output.push_str("    pass\n");
     } else {
         for field in &fields {
-            output.push_str("    ");
-            output.push_str(&field.target.python);
-            output.push_str(": ");
-            output.push_str(&render_type_ref(&field.ty, registry, field)?);
-            output.push_str(" = field(metadata={\"wire_name\": \"");
-            output.push_str(&escape_py_string(&field.wire.serialize_name));
-            output.push_str("\"})\n");
+            render_dataclass_field(field, registry, output)?;
         }
     }
 
@@ -226,10 +220,7 @@ fn render_from_dict(
         output.push_str(&parse_expr(
             field,
             registry,
-            &format!(
-                "data[\"{}\"]",
-                escape_py_string(&field.wire.deserialize_name)
-            ),
+            &field_access_expr(field, "data"),
         )?);
         output.push_str(",\n");
     }
@@ -336,13 +327,7 @@ fn render_tagged_enum(
             output.push_str("    pass\n");
         } else {
             for field in &fields {
-                output.push_str("    ");
-                output.push_str(&field.target.python);
-                output.push_str(": ");
-                output.push_str(&render_type_ref(&field.ty, registry, field)?);
-                output.push_str(" = field(metadata={\"wire_name\": \"");
-                output.push_str(&escape_py_string(&field.wire.serialize_name));
-                output.push_str("\"})\n");
+                render_dataclass_field(field, registry, output)?;
             }
         }
 
@@ -424,10 +409,7 @@ fn render_tagged_enum(
             output.push_str(&parse_expr(
                 field,
                 registry,
-                &format!(
-                    "{payload_name}[\"{}\"]",
-                    escape_py_string(&field.wire.deserialize_name)
-                ),
+                &field_access_expr(field, payload_name),
             )?);
             output.push_str(",\n");
         }
@@ -440,6 +422,56 @@ fn render_tagged_enum(
     output.push_str(&escape_py_string(&def.export_name));
     output.push_str("\", cause=exc) from exc\n");
     Ok(())
+}
+
+fn render_dataclass_field(
+    field: &FieldDef,
+    registry: &Registry,
+    output: &mut String,
+) -> Result<(), Diagnostic> {
+    output.push_str("    ");
+    output.push_str(&field.target.python);
+    output.push_str(": ");
+    output.push_str(&render_type_ref(&field.ty, registry, field)?);
+    output.push_str(" = ");
+    output.push_str(&field_call(field));
+    output.push('\n');
+    Ok(())
+}
+
+fn field_call(field: &FieldDef) -> String {
+    let metadata = format!(
+        "metadata={{\"wire_name\": \"{}\"}}",
+        escape_py_string(&field.wire.serialize_name)
+    );
+
+    match field.presence.default.as_ref() {
+        None => format!("field({metadata})"),
+        Some(DefaultKind::NoneValue) => format!("field(default=None, {metadata})"),
+        Some(DefaultKind::EmptyString) => format!("field(default=\"\", {metadata})"),
+        Some(DefaultKind::EmptyVec) => format!("field(default_factory=list, {metadata})"),
+        Some(DefaultKind::EmptyMap) => format!("field(default_factory=dict, {metadata})"),
+        Some(DefaultKind::BoolFalse) => format!("field(default=False, {metadata})"),
+        Some(DefaultKind::NumericZero) => format!("field(default=0, {metadata})"),
+        Some(DefaultKind::CustomPath(_)) => format!("field({metadata})"),
+    }
+}
+
+fn field_access_expr(field: &FieldDef, source: &str) -> String {
+    let wire_name = escape_py_string(&field.wire.deserialize_name);
+    if field.presence.required_on_deserialize {
+        return format!("{source}[\"{wire_name}\"]");
+    }
+
+    match field.presence.default.as_ref() {
+        None | Some(DefaultKind::NoneValue) => format!("{source}.get(\"{wire_name}\")"),
+        Some(DefaultKind::EmptyString) => format!("{source}.get(\"{wire_name}\", \"\")"),
+        Some(DefaultKind::EmptyVec) => format!("{source}.get(\"{wire_name}\", [])"),
+        Some(DefaultKind::EmptyMap) => format!("{source}.get(\"{wire_name}\", {{}})"),
+        Some(DefaultKind::BoolFalse) => format!("{source}.get(\"{wire_name}\", False)"),
+        Some(DefaultKind::NumericZero) => format!("{source}.get(\"{wire_name}\", 0)"),
+        Some(DefaultKind::CustomPath(_)) => format!("{source}.get(\"{wire_name}\")"),
+    }
 }
 
 fn parse_expr(field: &FieldDef, registry: &Registry, access: &str) -> Result<String, Diagnostic> {
@@ -845,6 +877,10 @@ mod tests {
                     .with_presence(FieldPresence::defaulted(
                         dto_bindgen_core::DefaultKind::NoneValue,
                     )),
+                )
+                .with_field(
+                    field("tags", "tags", TypeRef::vec(TypeRef::String))
+                        .with_presence(FieldPresence::defaulted(DefaultKind::EmptyVec)),
                 ),
         );
         let mut registry = Registry::new();
@@ -863,6 +899,16 @@ mod tests {
         );
         assert!(user.contents().contains("user_id: str"));
         assert!(user.contents().contains("display_name: str | None"));
+        assert!(
+            user.contents()
+                .contains("display_name: str | None = field(default=None")
+        );
+        assert!(
+            user.contents()
+                .contains("tags: list[str] = field(default_factory=list")
+        );
+        assert!(user.contents().contains("data.get(\"displayName\")"));
+        assert!(user.contents().contains("data.get(\"tags\", [])"));
         assert!(user.contents().contains("def from_dict"));
         assert!(user.contents().contains("def to_dict"));
         assert!(

@@ -3,7 +3,9 @@
 use proc_macro::TokenStream;
 
 use quote::{format_ident, quote};
-use syn::{Attribute, Data, DataEnum, DeriveInput, Fields, Ident, LitStr, parse_macro_input};
+use syn::{
+    Attribute, Data, DataEnum, DeriveInput, Fields, Ident, LitStr, Token, Type, parse_macro_input,
+};
 
 #[proc_macro_derive(Dto, attributes(dto, serde))]
 pub fn derive_dto(input: TokenStream) -> TokenStream {
@@ -96,8 +98,14 @@ fn expand_enum(
                         .rename
                         .unwrap_or_else(|| container_attrs.rename_variant_field(&rust_name));
                     let ty = field.ty;
-                    let field_expr =
-                        field_def_tokens(&field_var, &rust_name, &wire_name, field_attrs.int_repr);
+                    let field_expr = field_def_tokens(
+                        &field_var,
+                        &rust_name,
+                        &wire_name,
+                        &ty,
+                        field_attrs.int_repr,
+                        field_attrs.default,
+                    )?;
 
                     field_tokens.push(quote! {
                         let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
@@ -263,7 +271,14 @@ fn expand_struct(
             .unwrap_or_else(|| container_attrs.rename_field(&rust_name));
         let ty = field.ty;
 
-        let field_expr = field_def_tokens(&field_var, &rust_name, &wire_name, field_attrs.int_repr);
+        let field_expr = field_def_tokens(
+            &field_var,
+            &rust_name,
+            &wire_name,
+            &ty,
+            field_attrs.int_repr,
+            field_attrs.default,
+        )?;
         field_tokens.push(quote! {
             let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
             __dto_bindgen_def = __dto_bindgen_def.with_field(#field_expr);
@@ -322,24 +337,27 @@ fn field_def_tokens(
     field_var: &Ident,
     rust_name: &str,
     wire_name: &str,
+    ty: &Type,
     int_repr: Option<IntReprAttr>,
-) -> proc_macro2::TokenStream {
+    serde_default: bool,
+) -> syn::Result<proc_macro2::TokenStream> {
     let int_repr_tokens = int_repr
         .map(|value| {
             let value = value.tokens();
             quote!(.with_int_repr(#value))
         })
         .unwrap_or_default();
+    let presence_tokens = field_presence_tokens(ty, serde_default)?;
 
-    quote! {
+    Ok(quote! {
         ::dto_bindgen::__private::FieldDef::new(
             ::dto_bindgen::__private::IdentName::new(#rust_name),
             ::dto_bindgen::__private::WireFieldNames::same(#wire_name),
             ::dto_bindgen::__private::TargetFieldNames::new(#wire_name, #rust_name),
             #field_var,
             ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
-        )#int_repr_tokens
-    }
+        )#presence_tokens #int_repr_tokens
+    })
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -398,6 +416,7 @@ impl StructContainerAttrs {
 struct FieldAttrs {
     rename: Option<String>,
     skip: bool,
+    default: bool,
     int_repr: Option<IntReprAttr>,
 }
 
@@ -430,6 +449,15 @@ impl FieldAttrs {
                 if meta.path.is_ident("rename") {
                     parsed.rename = Some(parse_string_value(&meta)?);
                     Ok(())
+                } else if meta.path.is_ident("default") {
+                    if meta.input.peek(Token![=]) {
+                        let _ = parse_string_value(&meta)?;
+                        Err(meta
+                            .error("custom serde default paths are unsupported for `Dto` derive"))
+                    } else {
+                        parsed.default = true;
+                        Ok(())
+                    }
                 } else if meta.path.is_ident("skip") {
                     parsed.skip = true;
                     Ok(())
@@ -441,6 +469,60 @@ impl FieldAttrs {
 
         Ok(parsed)
     }
+}
+
+fn field_presence_tokens(ty: &Type, serde_default: bool) -> syn::Result<proc_macro2::TokenStream> {
+    if is_option_type(ty) {
+        return Ok(quote!(
+            .with_presence(::dto_bindgen::__private::FieldPresence::optional_nullable())
+        ));
+    }
+
+    if !serde_default {
+        return Ok(proc_macro2::TokenStream::new());
+    }
+
+    let default_kind = default_kind_tokens(ty)?;
+    Ok(quote!(
+        .with_presence(::dto_bindgen::__private::FieldPresence::defaulted(#default_kind))
+    ))
+}
+
+fn default_kind_tokens(ty: &Type) -> syn::Result<proc_macro2::TokenStream> {
+    let Some(ident) = last_type_ident(ty) else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "serde(default) is supported only for built-in DTO field types",
+        ));
+    };
+    let ident = ident.to_string();
+
+    match ident.as_str() {
+        "String" => Ok(quote!(::dto_bindgen::__private::DefaultKind::EmptyString)),
+        "Vec" => Ok(quote!(::dto_bindgen::__private::DefaultKind::EmptyVec)),
+        "HashMap" | "BTreeMap" => Ok(quote!(::dto_bindgen::__private::DefaultKind::EmptyMap)),
+        "bool" => Ok(quote!(::dto_bindgen::__private::DefaultKind::BoolFalse)),
+        "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "i128" | "u128" | "isize"
+        | "usize" | "f32" | "f64" => Ok(quote!(::dto_bindgen::__private::DefaultKind::NumericZero)),
+        _ => Err(syn::Error::new_spanned(
+            ty,
+            "serde(default) is supported only for Option, String, bool, numeric, Vec, and string-keyed map fields",
+        )),
+    }
+}
+
+fn is_option_type(ty: &Type) -> bool {
+    last_type_ident(ty)
+        .map(|ident| ident == "Option")
+        .unwrap_or(false)
+}
+
+fn last_type_ident(ty: &Type) -> Option<&Ident> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+
+    path.path.segments.last().map(|segment| &segment.ident)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -724,6 +806,34 @@ mod tests {
             err.to_string()
                 .contains("unsupported serde field attribute")
         );
+    }
+
+    #[test]
+    fn rejects_custom_default_paths() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Metadata {
+                #[serde(default = "fallback")]
+                values: Vec<String>,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("custom serde default paths"));
+    }
+
+    #[test]
+    fn rejects_default_for_unmapped_field_types() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Metadata {
+                #[serde(default)]
+                nested: PostalAddress,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("serde(default) is supported only"));
     }
 
     #[test]

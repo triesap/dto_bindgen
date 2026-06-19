@@ -31,6 +31,9 @@ struct UserProfile {
     address: PostalAddress,
     tags: Vec<String>,
     role: UserRole,
+    display_name: Option<String>,
+    #[serde(default)]
+    aliases: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Dto)]
@@ -72,7 +75,9 @@ fn serde_fixtures_match_supported_wire_shapes() {
                 "line1": "1 Main St"
             },
             "tags": ["alpha", "beta"],
-            "role": "guestUser"
+            "role": "guestUser",
+            "displayName": null,
+            "aliases": []
         })
     );
     assert_eq!(
@@ -91,7 +96,9 @@ fn serde_fixtures_match_supported_wire_shapes() {
                         "line1": "1 Main St"
                     },
                     "tags": ["alpha", "beta"],
-                    "role": "guestUser"
+                    "role": "guestUser",
+                    "displayName": null,
+                    "aliases": []
                 },
                 "eventId": "event-1"
             }
@@ -111,7 +118,9 @@ fn serde_fixtures_match_supported_wire_shapes() {
                             "line1": "1 Main St"
                         },
                         "tags": ["alpha", "beta"],
-                        "role": "guestUser"
+                        "role": "guestUser",
+                        "displayName": null,
+                        "aliases": []
                     },
                     "eventId": "event-1"
                 }
@@ -134,6 +143,9 @@ fn export_is_byte_deterministic_for_generated_fixture() {
     assert!(first.contains_key("dto_bindgen.generated.json"));
     assert!(first.contains_key("ts/user_profile.ts"));
     assert!(first.contains_key("python/my_sdk_dto/user_profile.py"));
+    let user_ts = String::from_utf8(first["ts/user_profile.ts"].clone()).unwrap();
+    assert!(user_ts.contains("displayName?: string | null;"));
+    assert!(user_ts.contains("aliases?: Array<string>;"));
 }
 
 #[test]
@@ -168,11 +180,29 @@ profile_data = {{
     "address": {{"line1": "1 Main St"}},
     "tags": ["alpha", "beta"],
     "role": "guestUser",
+    "displayName": None,
+    "aliases": [],
 }}
 profile = UserProfile.from_dict(profile_data)
 assert isinstance(profile.address, PostalAddress)
 assert profile.role == UserRole.GUEST_USER
 assert profile.to_dict() == profile_data
+
+profile_missing_defaults = {{
+    "userId": "user-1",
+    "active": True,
+    "address": {{"line1": "1 Main St"}},
+    "tags": ["alpha", "beta"],
+    "role": "guestUser",
+}}
+profile_with_defaults = UserProfile.from_dict(profile_missing_defaults)
+assert profile_with_defaults.display_name is None
+assert profile_with_defaults.aliases == []
+assert profile_with_defaults.to_dict() == {{
+    **profile_missing_defaults,
+    "displayName": None,
+    "aliases": [],
+}}
 
 event_data = {{
     "type": "userCreated",
@@ -213,6 +243,8 @@ fn user_profile() -> UserProfile {
         },
         tags: vec!["alpha".to_owned(), "beta".to_owned()],
         role: UserRole::GuestUser,
+        display_name: None,
+        aliases: Vec::new(),
     }
 }
 

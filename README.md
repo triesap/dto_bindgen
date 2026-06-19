@@ -97,7 +97,7 @@ Rust/Serde support:
 - internally tagged enum struct variants
 - adjacently tagged enum struct variants
 - `rename`, `rename_all`, `rename_all_fields`, `deny_unknown_fields`
-- field `rename`, `skip`, `default`
+- field `rename`, `skip`, and built-in `default` for `Option<T>`, `String`, `bool`, numeric types, `Vec<T>`, and string-keyed maps
 - primitives, `Option<T>`, `Vec<T>`, arrays, string-keyed maps, and named DTO references
 
 DTO-specific support:
@@ -105,7 +105,7 @@ DTO-specific support:
 - `#[dto(skip)]`
 - `#[dto(int_repr = "json_string" | "json_number_unsafe" | "non_json_bigint")]`
 
-Unsupported behavior fails closed with diagnostics. MVP non-goals include whole-crate discovery, `flatten`, `untagged`, arbitrary custom serializers, Pydantic, JSON Schema/OpenAPI, Swift/Kotlin backends, and UniFFI integration.
+Unsupported behavior fails closed with diagnostics. MVP non-goals include whole-crate discovery, `flatten`, `untagged`, custom `serde(default = "...")` functions, arbitrary custom serializers, Pydantic, JSON Schema/OpenAPI, Swift/Kotlin backends, and UniFFI integration.
 
 ## Numeric Policy
 
