@@ -44,12 +44,23 @@ enum SdkEvent {
     UserCreated { user: UserProfile, event_id: String },
 }
 
+#[derive(Clone, Serialize, Dto)]
+#[serde(rename_all = "camelCase")]
+struct EventEnvelope {
+    source: String,
+    event: SdkEvent,
+}
+
 #[test]
 fn serde_fixtures_match_supported_wire_shapes() {
     let profile = user_profile();
     let event = SdkEvent::UserCreated {
         user: profile.clone(),
         event_id: "event-1".to_owned(),
+    };
+    let envelope = EventEnvelope {
+        source: "fixture".to_owned(),
+        event,
     };
 
     assert_eq!(
@@ -69,7 +80,7 @@ fn serde_fixtures_match_supported_wire_shapes() {
         json!("admin")
     );
     assert_eq!(
-        serde_json::to_value(&event).unwrap(),
+        serde_json::to_value(&envelope.event).unwrap(),
         json!({
             "type": "userCreated",
             "payload": {
@@ -83,6 +94,27 @@ fn serde_fixtures_match_supported_wire_shapes() {
                     "role": "guestUser"
                 },
                 "eventId": "event-1"
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&envelope).unwrap(),
+        json!({
+            "source": "fixture",
+            "event": {
+                "type": "userCreated",
+                "payload": {
+                    "user": {
+                        "userId": "user-1",
+                        "active": true,
+                        "address": {
+                            "line1": "1 Main St"
+                        },
+                        "tags": ["alpha", "beta"],
+                        "role": "guestUser"
+                    },
+                    "eventId": "event-1"
+                }
             }
         })
     );
@@ -127,7 +159,7 @@ import sys
 
 sys.path.insert(0, {python_root_literal})
 
-from my_sdk_dto import PostalAddress, UserProfile, UserRole
+from my_sdk_dto import EventEnvelope, PostalAddress, UserProfile, UserRole
 from my_sdk_dto.sdk_event import SdkEventUserCreated, parse_sdk_event
 
 profile_data = {{
@@ -152,6 +184,14 @@ event_data = {{
 event = parse_sdk_event(event_data)
 assert isinstance(event, SdkEventUserCreated)
 assert event.to_dict() == event_data
+
+envelope_data = {{
+    "source": "fixture",
+    "event": event_data,
+}}
+envelope = EventEnvelope.from_dict(envelope_data)
+assert isinstance(envelope.event, SdkEventUserCreated)
+assert envelope.to_dict() == envelope_data
 
 try:
     UserProfile.from_dict({{**profile_data, "extra": True}})
@@ -179,7 +219,13 @@ fn user_profile() -> UserProfile {
 fn export_fixture(config_path: &Path) -> dto_bindgen::export::ExportReport {
     dto_bindgen::export_types!(
         config = config_path,
-        roots = [PostalAddress, UserRole, UserProfile, SdkEvent],
+        roots = [
+            PostalAddress,
+            UserRole,
+            UserProfile,
+            SdkEvent,
+            EventEnvelope
+        ],
     )
     .unwrap()
 }

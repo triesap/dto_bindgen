@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::result_large_err)]
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use dto_bindgen_core::{
     Backend, BackendError, BackendId, Config, Diagnostic, DiagnosticCode, EnumDef, EnumRepr,
@@ -115,8 +115,8 @@ fn render_type_file(
         }
     }
 
-    let imports = collect_imports(type_id, type_def);
-    for dependency in imports {
+    let imports = collect_imports(type_id, type_def, registry);
+    for (dependency, import) in imports {
         let dependency_def = registry.type_def(dependency).ok_or_else(|| {
             Diagnostic::error(DiagnosticCode::new(102), "missing named dependency")
                 .with_backend(BackendId::Python)
@@ -124,7 +124,11 @@ fn render_type_file(
         output.push_str("\nfrom .");
         output.push_str(&module_name(dependency_def));
         output.push_str(" import ");
-        output.push_str(type_name(dependency_def));
+        let mut names = vec![type_name(dependency_def).to_owned()];
+        if import.parser {
+            names.push(parser_name(dependency_def));
+        }
+        output.push_str(&names.join(", "));
         output.push('\n');
     }
 
@@ -386,9 +390,8 @@ fn render_tagged_enum(
     output.push_str(&variant_class_names.join(" | "));
     output.push_str("\n\n");
 
-    let parser_name = format!("parse_{}", module_name(&TypeDef::Enum(def.clone())));
     output.push_str("def ");
-    output.push_str(&parser_name);
+    output.push_str(&parser_name(&TypeDef::Enum(def.clone())));
     output.push_str("(data: dict[str, Any]) -> ");
     output.push_str(&def.export_name);
     output.push_str(":\n");
@@ -496,6 +499,10 @@ fn parse_type_expr(
                 TypeDef::Enum(def) if is_fieldless_enum(def) => {
                     Ok(format!("{}({access})", def.export_name))
                 }
+                TypeDef::Enum(def) if is_tagged_enum(def) => Ok(format!(
+                    "{}({access})",
+                    parser_name(&TypeDef::Enum(def.clone()))
+                )),
                 TypeDef::Enum(_) => Ok(format!("{}.from_dict({access})", type_name(def))),
             }
         }
@@ -627,25 +634,38 @@ fn render_errors_file() -> String {
     "from __future__ import annotations\n\n\nclass DtoParseError(ValueError):\n    def __init__(self, path: str, cause: Exception | None = None) -> None:\n        self.path = path\n        self.cause = cause\n        message = f\"failed to parse DTO at {path}\"\n        if cause is not None:\n            message = f\"{message}: {cause}\"\n        super().__init__(message)\n".to_owned()
 }
 
-fn collect_imports(type_id: TypeId, type_def: &TypeDef) -> BTreeSet<TypeId> {
-    let mut imports = BTreeSet::new();
-    collect_type_def_named_refs(type_def, &mut imports);
+#[derive(Debug, Default)]
+struct PythonImport {
+    parser: bool,
+}
+
+fn collect_imports(
+    type_id: TypeId,
+    type_def: &TypeDef,
+    registry: &Registry,
+) -> BTreeMap<TypeId, PythonImport> {
+    let mut imports = BTreeMap::new();
+    collect_type_def_named_refs(type_def, registry, &mut imports);
     imports.remove(&type_id);
     imports
 }
 
-fn collect_type_def_named_refs(type_def: &TypeDef, imports: &mut BTreeSet<TypeId>) {
+fn collect_type_def_named_refs(
+    type_def: &TypeDef,
+    registry: &Registry,
+    imports: &mut BTreeMap<TypeId, PythonImport>,
+) {
     match type_def {
         TypeDef::Struct(def) => {
             for field in &def.fields {
-                collect_type_ref_named_refs(&field.ty, imports);
+                collect_type_ref_named_refs(&field.ty, registry, imports);
             }
         }
         TypeDef::Enum(def) => {
             for variant in &def.variants {
                 if let VariantShape::Struct(fields) = &variant.shape {
                     for field in fields {
-                        collect_type_ref_named_refs(&field.ty, imports);
+                        collect_type_ref_named_refs(&field.ty, registry, imports);
                     }
                 }
             }
@@ -671,16 +691,28 @@ fn is_tagged_enum(def: &EnumDef) -> bool {
         .all(|variant| matches!(variant.shape, VariantShape::Struct(_)))
 }
 
-fn collect_type_ref_named_refs(ty: &TypeRef, imports: &mut BTreeSet<TypeId>) {
+fn collect_type_ref_named_refs(
+    ty: &TypeRef,
+    registry: &Registry,
+    imports: &mut BTreeMap<TypeId, PythonImport>,
+) {
     match ty {
         TypeRef::Named(type_id) => {
-            imports.insert(*type_id);
+            let import = imports.entry(*type_id).or_default();
+            if matches!(
+                registry.type_def(*type_id),
+                Some(TypeDef::Enum(def)) if is_tagged_enum(def)
+            ) {
+                import.parser = true;
+            }
         }
-        TypeRef::Option(inner) | TypeRef::Vec(inner) => collect_type_ref_named_refs(inner, imports),
-        TypeRef::Array { item, .. } => collect_type_ref_named_refs(item, imports),
+        TypeRef::Option(inner) | TypeRef::Vec(inner) => {
+            collect_type_ref_named_refs(inner, registry, imports);
+        }
+        TypeRef::Array { item, .. } => collect_type_ref_named_refs(item, registry, imports),
         TypeRef::Map { key, value } => {
-            collect_type_ref_named_refs(key, imports);
-            collect_type_ref_named_refs(value, imports);
+            collect_type_ref_named_refs(key, registry, imports);
+            collect_type_ref_named_refs(value, registry, imports);
         }
         TypeRef::Primitive(_)
         | TypeRef::String
@@ -730,6 +762,10 @@ fn type_name(type_def: &TypeDef) -> &str {
 
 fn module_name(type_def: &TypeDef) -> String {
     to_snake_case(type_name(type_def))
+}
+
+fn parser_name(type_def: &TypeDef) -> String {
+    format!("parse_{}", module_name(type_def))
 }
 
 fn enum_member_name(value: &str) -> String {
