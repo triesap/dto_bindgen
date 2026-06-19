@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::result_large_err)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use dto_bindgen_core::{
     Backend, BackendError, BackendId, Config, Diagnostic, DiagnosticCode, EnumDef, EnumRepr,
@@ -21,6 +21,13 @@ impl TypeScriptBackend {
 impl Backend for TypeScriptBackend {
     fn id(&self) -> BackendId {
         BackendId::TypeScript
+    }
+
+    fn validate(&self, registry: &Registry, config: &Config) -> Vec<Diagnostic> {
+        if !config.typescript.enabled {
+            return Vec::new();
+        }
+        validate_type_names(registry)
     }
 
     fn render(
@@ -124,7 +131,7 @@ fn render_struct(
     output: &mut String,
 ) -> Result<(), Diagnostic> {
     output.push_str("export type ");
-    output.push_str(&def.export_name);
+    output.push_str(struct_type_name(def));
     output.push_str(" = {\n");
 
     for field in def.fields.iter().filter(|field| field_is_emitted(field)) {
@@ -166,7 +173,7 @@ fn render_enum(
 
 fn render_fieldless_enum(def: &EnumDef, output: &mut String) {
     output.push_str("export type ");
-    output.push_str(&def.export_name);
+    output.push_str(enum_type_name(def));
     output.push_str(" = ");
 
     for (index, variant) in def.variants.iter().enumerate() {
@@ -190,13 +197,13 @@ fn render_tagged_enum(
     output: &mut String,
 ) -> Result<(), Diagnostic> {
     output.push_str("export type ");
-    output.push_str(&def.export_name);
+    output.push_str(enum_type_name(def));
     output.push_str(" =\n");
 
     for variant in &def.variants {
         output.push_str("  | {\n");
         push_indent(output, 6);
-        output.push_str(tag);
+        push_object_key(output, tag);
         output.push_str(": \"");
         output.push_str(&escape_string_literal(&variant.wire_name));
         output.push_str("\";\n");
@@ -207,7 +214,7 @@ fn render_tagged_enum(
 
         if let Some(content) = content {
             push_indent(output, 6);
-            output.push_str(content);
+            push_object_key(output, content);
             output.push_str(": {\n");
             for field in fields.iter().filter(|field| field_is_emitted(field)) {
                 render_object_field(field, registry, config, 8, output)?;
@@ -235,7 +242,7 @@ fn render_object_field(
     output: &mut String,
 ) -> Result<(), Diagnostic> {
     push_indent(output, indent);
-    output.push_str(&field.wire.serialize_name);
+    push_object_key(output, &field.wire.serialize_name);
     if !field.presence.required_on_deserialize {
         output.push('?');
     }
@@ -402,7 +409,60 @@ fn unsupported_variant(def: &EnumDef, variant: &VariantDef) -> Diagnostic {
         .with_backend(BackendId::TypeScript)
 }
 
+fn validate_type_names(registry: &Registry) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut seen = BTreeMap::<String, String>::new();
+
+    for type_def in registry.types_by_id.values() {
+        let name = type_name(type_def);
+        let diagnostic_name = diagnostic_type_name(type_def);
+        if !is_valid_type_identifier(name) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::new(502),
+                    format!("invalid TypeScript type name `{name}`"),
+                )
+                .with_help(
+                    "Use #[dto(ts(name = \"ValidIdentifier\"))] to provide a valid TypeScript type name.",
+                )
+                .with_type(diagnostic_name.to_owned())
+                .with_backend(BackendId::TypeScript),
+            );
+        }
+        if let Some(first_type) = seen.insert(name.to_owned(), diagnostic_name.to_owned()) {
+            diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::new(503),
+                    format!("duplicate TypeScript type name `{name}`"),
+                )
+                .with_help(format!(
+                    "Types `{first_type}` and `{diagnostic_name}` resolve to the same TypeScript name."
+                ))
+                .with_type(diagnostic_name.to_owned())
+                .with_backend(BackendId::TypeScript),
+            );
+        }
+    }
+
+    diagnostics
+}
+
 fn type_name(type_def: &TypeDef) -> &str {
+    match type_def {
+        TypeDef::Struct(def) => struct_type_name(def),
+        TypeDef::Enum(def) => enum_type_name(def),
+    }
+}
+
+fn struct_type_name(def: &StructDef) -> &str {
+    def.attrs.ts_name.as_deref().unwrap_or(&def.export_name)
+}
+
+fn enum_type_name(def: &EnumDef) -> &str {
+    def.attrs.ts_name.as_deref().unwrap_or(&def.export_name)
+}
+
+fn diagnostic_type_name(type_def: &TypeDef) -> &str {
     match type_def {
         TypeDef::Struct(def) => &def.export_name,
         TypeDef::Enum(def) => &def.export_name,
@@ -480,6 +540,43 @@ fn push_indent(output: &mut String, count: usize) {
     for _ in 0..count {
         output.push(' ');
     }
+}
+
+fn push_object_key(output: &mut String, value: &str) {
+    if is_valid_property_identifier(value) {
+        output.push_str(value);
+    } else {
+        output.push('"');
+        output.push_str(&escape_string_literal(value));
+        output.push('"');
+    }
+}
+
+fn is_valid_type_identifier(value: &str) -> bool {
+    is_valid_identifier(value)
+}
+
+fn is_valid_property_identifier(value: &str) -> bool {
+    is_valid_identifier(value)
+}
+
+fn is_valid_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !is_identifier_start(first) {
+        return false;
+    }
+    chars.all(is_identifier_part)
+}
+
+fn is_identifier_start(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphabetic()
+}
+
+fn is_identifier_part(ch: char) -> bool {
+    is_identifier_start(ch) || ch.is_ascii_digit()
 }
 
 fn escape_string_literal(value: &str) -> String {
@@ -680,6 +777,78 @@ mod tests {
         let contents = find_file(&files, "profile_patch.ts").contents();
 
         assert!(contents.contains("displayName?: string | null;"));
+    }
+
+    #[test]
+    fn quotes_unsafe_object_property_names() {
+        let def = TypeDef::Struct(
+            dto_bindgen_core::StructDef::new("AssetEntry", "AssetEntry", span())
+                .with_field(field("content_type", "content-type", TypeRef::String))
+                .with_field(field("dot_key", "metadata.hash", TypeRef::String))
+                .with_field(field("numeric_key", "123value", TypeRef::String)),
+        );
+        let registry = registry_with_types([(RustTypeId::new("sdk", "AssetEntry"), def)]);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let contents = find_file(&files, "asset_entry.ts").contents();
+
+        assert!(contents.contains("\"content-type\": string;"));
+        assert!(contents.contains("\"metadata.hash\": string;"));
+        assert!(contents.contains("\"123value\": string;"));
+    }
+
+    #[test]
+    fn honors_typescript_target_name_overrides() {
+        let mut def = dto_bindgen_core::StructDef::new("Manifest", "Manifest", span());
+        def.attrs.ts_name = Some("Mf2WebManifest".to_owned());
+        let registry =
+            registry_with_types([(RustTypeId::new("sdk", "Manifest"), TypeDef::Struct(def))]);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let manifest = find_file(&files, "mf2_web_manifest.ts");
+        let index = find_file(&files, "index.ts");
+
+        assert!(manifest.contents().contains("export type Mf2WebManifest"));
+        assert!(
+            index
+                .contents()
+                .contains("export type { Mf2WebManifest } from \"./mf2_web_manifest\";")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_and_duplicate_typescript_target_names() {
+        let mut first = dto_bindgen_core::StructDef::new("BuildManifest", "BuildManifest", span());
+        first.attrs.ts_name = Some("Mf2WebManifest".to_owned());
+        let mut duplicate =
+            dto_bindgen_core::StructDef::new("RuntimeManifest", "RuntimeManifest", span());
+        duplicate.attrs.ts_name = Some("Mf2WebManifest".to_owned());
+        let mut invalid = dto_bindgen_core::StructDef::new("BadName", "BadName", span());
+        invalid.attrs.ts_name = Some("bad-name".to_owned());
+        let registry = registry_with_types([
+            (
+                RustTypeId::new("sdk", "BuildManifest"),
+                TypeDef::Struct(first),
+            ),
+            (
+                RustTypeId::new("sdk", "RuntimeManifest"),
+                TypeDef::Struct(duplicate),
+            ),
+            (RustTypeId::new("sdk", "BadName"), TypeDef::Struct(invalid)),
+        ]);
+
+        let diagnostics = TypeScriptBackend::new().validate(&registry, &Config::default());
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>();
+
+        assert!(codes.contains(&DiagnosticCode::new(502)));
+        assert!(codes.contains(&DiagnosticCode::new(503)));
     }
 
     #[test]

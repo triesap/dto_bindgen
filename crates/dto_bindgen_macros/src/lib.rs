@@ -140,6 +140,7 @@ fn expand_enum(
         .rename
         .clone()
         .unwrap_or_else(|| ident.to_string());
+    let ts_name_attr = option_string_tokens(container_attrs.ts_name.as_deref());
 
     Ok(quote! {
         impl ::dto_bindgen::Dto for #ident {
@@ -155,6 +156,7 @@ fn expand_enum(
                         #enum_repr,
                         __dto_bindgen_source,
                     );
+                __dto_bindgen_def.attrs.ts_name = #ts_name_attr;
 
                 #(#variant_tokens)*
 
@@ -293,6 +295,7 @@ fn expand_struct(
         .unwrap_or_else(|| ident.to_string());
     let rename_attr = option_string_tokens(container_attrs.rename.as_deref());
     let rename_all_attr = option_string_tokens(container_attrs.rename_all.as_deref());
+    let ts_name_attr = option_string_tokens(container_attrs.ts_name.as_deref());
     let deny_unknown_fields = container_attrs.deny_unknown_fields;
 
     Ok(quote! {
@@ -307,9 +310,10 @@ fn expand_struct(
                         stringify!(#ident),
                         #export_name,
                         __dto_bindgen_source.clone(),
-                    );
+                );
                 __dto_bindgen_def.attrs.rename = #rename_attr;
                 __dto_bindgen_def.attrs.rename_all = #rename_all_attr;
+                __dto_bindgen_def.attrs.ts_name = #ts_name_attr;
                 __dto_bindgen_def.attrs.deny_unknown_fields = #deny_unknown_fields;
 
                 #(#field_tokens)*
@@ -367,6 +371,7 @@ fn field_def_tokens(
 struct StructContainerAttrs {
     rename: Option<String>,
     rename_all: Option<String>,
+    ts_name: Option<String>,
     deny_unknown_fields: bool,
     default: bool,
 }
@@ -377,10 +382,8 @@ impl StructContainerAttrs {
 
         for attr in attrs {
             if attr.path().is_ident("dto") {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "`Dto` derive does not support dto container attributes in this slice yet",
-                ));
+                parse_dto_container_attr(attr, &mut parsed.ts_name)?;
+                continue;
             }
 
             if !attr.path().is_ident("serde") {
@@ -599,6 +602,7 @@ struct EnumContainerAttrs {
     rename: Option<String>,
     rename_all: Option<String>,
     rename_all_fields: Option<String>,
+    ts_name: Option<String>,
     tag: Option<String>,
     content: Option<String>,
 }
@@ -609,10 +613,8 @@ impl EnumContainerAttrs {
 
         for attr in attrs {
             if attr.path().is_ident("dto") {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "`Dto` derive does not support dto enum attributes in this slice yet",
-                ));
+                parse_dto_container_attr(attr, &mut parsed.ts_name)?;
+                continue;
             }
 
             if !attr.path().is_ident("serde") {
@@ -696,6 +698,23 @@ impl VariantAttrs {
 
         Ok(parsed)
     }
+}
+
+fn parse_dto_container_attr(attr: &Attribute, ts_name: &mut Option<String>) -> syn::Result<()> {
+    attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("ts") {
+            meta.parse_nested_meta(|meta| {
+                if meta.path.is_ident("name") {
+                    *ts_name = Some(parse_string_value(&meta)?);
+                    Ok(())
+                } else {
+                    Err(meta.error("unsupported dto ts container attribute for `Dto` derive"))
+                }
+            })
+        } else {
+            Err(meta.error("unsupported dto container attribute for `Dto` derive"))
+        }
+    })
 }
 
 fn parse_string_value(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<String> {
@@ -847,6 +866,52 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("unsupported serde field attribute")
+        );
+    }
+
+    #[test]
+    fn accepts_container_typescript_name_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[dto(ts(name = "Mf2WebManifest"))]
+            struct Manifest {
+                schema: u32,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand");
+
+        assert!(tokens.to_string().contains("Mf2WebManifest"));
+    }
+
+    #[test]
+    fn accepts_enum_typescript_name_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[dto(ts(name = "Mf2ArgType"))]
+            enum ArgType {
+                String,
+                Number,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand");
+
+        assert!(tokens.to_string().contains("Mf2ArgType"));
+    }
+
+    #[test]
+    fn rejects_unsupported_container_dto_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[dto(py(name = "ManifestDto"))]
+            struct Manifest {
+                schema: u32,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported dto container attribute")
         );
     }
 

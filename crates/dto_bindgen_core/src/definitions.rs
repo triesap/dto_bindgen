@@ -19,6 +19,7 @@ pub struct ContainerAttrs {
     pub rename: Option<String>,
     pub rename_all: Option<String>,
     pub rename_all_fields: Option<String>,
+    pub ts_name: Option<String>,
     pub tag: Option<String>,
     pub content: Option<String>,
     pub deny_unknown_fields: bool,
@@ -155,6 +156,7 @@ impl VariantDef {
 pub struct EnumDef {
     pub rust_name: String,
     pub export_name: String,
+    pub attrs: ContainerAttrs,
     pub repr: EnumRepr,
     pub variants: Vec<VariantDef>,
     pub source: SourceSpan,
@@ -170,6 +172,7 @@ impl EnumDef {
         Self {
             rust_name: rust_name.into(),
             export_name: export_name.into(),
+            attrs: ContainerAttrs::default(),
             repr,
             variants: Vec::new(),
             source,
