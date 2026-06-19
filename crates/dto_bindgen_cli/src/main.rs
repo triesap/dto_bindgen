@@ -71,26 +71,18 @@ fn run_command(options: CliOptions, stdout: &mut String, stderr: &mut String) ->
             }
         }
         Command::Clean => match dto_bindgen::config::Config::from_toml_path(&options.config_path) {
-            Ok(config) => match dto_bindgen_core::OutputWriter::new(output_root(
-                &options.config_path,
-                &config.export.out_dir,
-            )) {
-                Ok(writer) => match writer.clean_previous_manifest() {
-                    Ok(report) => {
-                        writeln!(
-                            stdout,
-                            "removed {} manifest-owned file(s)",
-                            report.files.len()
-                        )
-                        .expect("writing to a String cannot fail");
-                        0
-                    }
-                    Err(source) => {
-                        writeln!(stderr, "error: {source}")
-                            .expect("writing to a String cannot fail");
-                        1
-                    }
-                },
+            Ok(config) => match dto_bindgen_core::OutputWriter::clean_previous_manifest_at(
+                output_root(&options.config_path, &config.export.out_dir),
+            ) {
+                Ok(report) => {
+                    writeln!(
+                        stdout,
+                        "removed {} manifest-owned file(s)",
+                        report.files.len()
+                    )
+                    .expect("writing to a String cannot fail");
+                    0
+                }
                 Err(source) => {
                     writeln!(stderr, "error: {source}").expect("writing to a String cannot fail");
                     1
@@ -417,6 +409,33 @@ mod tests {
             std::fs::read_to_string(generated_ts.join("keep.ts")).unwrap(),
             "keep\n"
         );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clean_command_noops_when_output_root_is_absent() {
+        let root = temp_project();
+        let config_path = root.join("dto_bindgen.toml");
+        let generated = root.join("generated");
+        std::fs::write(&config_path, "[export]\nout_dir = \"generated\"\n").unwrap();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        let code = run(
+            vec![
+                "clean".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert!(stdout.contains("removed 0 manifest-owned file"));
+        assert!(!generated.exists());
 
         std::fs::remove_dir_all(root).unwrap();
     }

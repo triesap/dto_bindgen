@@ -39,6 +39,10 @@ pub struct OutputWriter {
 
 impl OutputWriter {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, OutputWriterError> {
+        Self::create(root)
+    }
+
+    pub fn create(root: impl AsRef<Path>) -> Result<Self, OutputWriterError> {
         let original = root.as_ref().to_owned();
         match fs::create_dir_all(&original) {
             Ok(()) => {}
@@ -64,6 +68,54 @@ impl OutputWriter {
             root,
             manifest_name: DEFAULT_MANIFEST_NAME.to_owned(),
         })
+    }
+
+    pub fn open(root: impl AsRef<Path>) -> Result<Option<Self>, OutputWriterError> {
+        let original = root.as_ref().to_owned();
+        let root = match fs::canonicalize(&original) {
+            Ok(root) => root,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(OutputWriterError::Root {
+                    path: original,
+                    source,
+                });
+            }
+        };
+
+        if !root.is_dir() {
+            return Err(OutputWriterError::RootNotDirectory { path: root });
+        }
+
+        Ok(Some(Self {
+            root,
+            manifest_name: DEFAULT_MANIFEST_NAME.to_owned(),
+        }))
+    }
+
+    pub fn for_check(root: impl AsRef<Path>) -> Result<Self, OutputWriterError> {
+        let original = root.as_ref().to_owned();
+        if let Some(writer) = Self::open(&original)? {
+            return Ok(writer);
+        }
+
+        Ok(Self {
+            root: absolute_path(&original)?,
+            manifest_name: DEFAULT_MANIFEST_NAME.to_owned(),
+        })
+    }
+
+    pub fn clean_previous_manifest_at(
+        root: impl AsRef<Path>,
+    ) -> Result<OutputReport, OutputWriterError> {
+        let original = root.as_ref().to_owned();
+        match Self::open(&original)? {
+            Some(writer) => writer.clean_previous_manifest(),
+            None => Ok(OutputReport {
+                files: Vec::new(),
+                manifest_path: absolute_path(&original)?.join(DEFAULT_MANIFEST_NAME),
+            }),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -603,6 +655,19 @@ fn rollback(committed: Vec<(PathBuf, PreviousTarget)>) {
     }
 }
 
+fn absolute_path(path: &Path) -> Result<PathBuf, OutputWriterError> {
+    if path.is_absolute() {
+        return Ok(path.to_owned());
+    }
+
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|source| OutputWriterError::Root {
+            path: path.to_owned(),
+            source,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -714,6 +779,28 @@ mod tests {
     }
 
     #[test]
+    fn check_missing_root_reports_drift_without_creating_root() {
+        let parent = TempRoot::new();
+        let missing_root = parent.path().join("missing");
+        let writer = OutputWriter::for_check(&missing_root).unwrap();
+        let file_set = sample_file_set();
+        let manifest = sample_manifest(&file_set);
+
+        let err = writer.check(&file_set, &manifest).unwrap_err();
+
+        let OutputWriterError::CheckFailed { mismatches } = err else {
+            panic!("expected check failure");
+        };
+        assert_eq!(mismatches.len(), 2);
+        assert!(
+            mismatches
+                .iter()
+                .all(|mismatch| mismatch.kind == CheckMismatchKind::Missing)
+        );
+        assert!(!missing_root.exists());
+    }
+
+    #[test]
     fn clean_removes_only_manifest_owned_files() {
         let root = TempRoot::new();
         let writer = OutputWriter::new(root.path()).unwrap();
@@ -730,6 +817,18 @@ mod tests {
         assert!(!root.path().join("generated/ts/user.ts").exists());
         assert!(!root.path().join(DEFAULT_MANIFEST_NAME).exists());
         assert_eq!(fs::read_to_string(unrelated).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn clean_missing_root_noops_without_creating_root() {
+        let parent = TempRoot::new();
+        let missing_root = parent.path().join("missing");
+
+        let report = OutputWriter::clean_previous_manifest_at(&missing_root).unwrap();
+
+        assert!(report.files.is_empty());
+        assert!(report.manifest_path.ends_with(DEFAULT_MANIFEST_NAME));
+        assert!(!missing_root.exists());
     }
 
     #[test]

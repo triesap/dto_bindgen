@@ -35,11 +35,12 @@ pub fn export_with_roots(
         sha256_hex(config_input.as_bytes()),
         &writer_files,
     );
-    let writer = OutputWriter::new(output_root(&options.config_path, &config))
-        .map_err(ExportError::Output)?;
+    let output_root = output_root(&options.config_path, &config);
     let output = if options.check {
+        let writer = OutputWriter::for_check(&output_root).map_err(ExportError::Output)?;
         writer.check(&writer_files, &manifest)
     } else {
+        let writer = OutputWriter::new(&output_root).map_err(ExportError::Output)?;
         writer.write(&writer_files, &manifest)
     }
     .map_err(ExportError::Output)?;
@@ -279,6 +280,29 @@ enabled = false
         .unwrap();
 
         assert_eq!(report.files.len(), 2);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn check_mode_reports_missing_output_without_creating_root() {
+        let root = temp_project();
+        let config_path = write_config(&root);
+        let generated = root.join("generated");
+
+        let err = export_with_roots(
+            ExportOptions::new(config_path.clone()).check(true),
+            [RootDescriptor::new::<SimpleDto>()],
+        )
+        .unwrap_err();
+
+        let ExportError::Output(dto_bindgen_core::OutputWriterError::CheckFailed { mismatches }) =
+            err
+        else {
+            panic!("expected check failure");
+        };
+        assert!(!mismatches.is_empty());
+        assert!(!generated.exists());
 
         fs::remove_dir_all(root).unwrap();
     }
