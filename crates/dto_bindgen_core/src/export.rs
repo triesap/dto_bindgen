@@ -42,7 +42,11 @@ pub enum ExportError {
     Output(OutputWriterError),
 }
 
-pub fn export_with_roots(
+/// Build and validate a registry for explicit roots without rendering or writing files.
+///
+/// The user-facing export path lives in the `dto_bindgen` facade crate because it
+/// wires concrete backends and output writing around these shared core types.
+pub fn validate_roots(
     options: ExportOptions,
     roots: impl IntoIterator<Item = RootDescriptor>,
 ) -> Result<ExportReport, ExportError> {
@@ -145,9 +149,9 @@ mod tests {
     }
 
     #[test]
-    fn exports_validated_registry_without_files_until_backends_exist() {
+    fn validates_roots_without_rendering_files() {
         let path = temp_config("");
-        let report = export_with_roots(
+        let report = validate_roots(
             ExportOptions::new(path.clone()),
             [RootDescriptor::new::<SimpleDto>()],
         )
@@ -162,7 +166,7 @@ mod tests {
     #[test]
     fn returns_blocking_diagnostics() {
         let path = temp_config("");
-        let err = export_with_roots(
+        let err = validate_roots(
             ExportOptions::new(path.clone()),
             [RootDescriptor::new::<LargeIntDto>()],
         )
