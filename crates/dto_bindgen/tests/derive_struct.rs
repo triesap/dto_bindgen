@@ -197,6 +197,42 @@ fn export_types_macro_builds_and_validates_roots() {
 }
 
 #[test]
+fn inventory_preserves_skipped_fields_while_export_omits_them() {
+    let inventory = dto_bindgen_core::scan_rust_source(
+        "src/sdk.rs",
+        r#"
+        #[derive(Dto)]
+        #[serde(rename = "PublicUserProfile", rename_all = "camelCase")]
+        struct UserProfile {
+            user_id: String,
+            #[serde(skip)]
+            internal_note: String,
+        }
+        "#,
+    )
+    .unwrap();
+
+    let skipped = inventory
+        .fields()
+        .find(|field| field.rust_name == "internal_note")
+        .expect("inventory should preserve skipped field");
+    assert!(skipped.skipped);
+
+    let config_path = temp_config("");
+    dto_bindgen::export_types!(config = config_path.as_path(), roots = [UserProfile],).unwrap();
+    let generated = config_path
+        .parent()
+        .unwrap()
+        .join("generated/ts/public_user_profile.ts");
+    let contents = std::fs::read_to_string(generated).unwrap();
+
+    assert!(!contents.contains("internalNote"));
+    assert!(!contents.contains("internal_note"));
+
+    cleanup_config(&config_path);
+}
+
+#[test]
 fn dto_int_repr_satisfies_large_integer_policy() {
     let config_path = temp_config("");
 
