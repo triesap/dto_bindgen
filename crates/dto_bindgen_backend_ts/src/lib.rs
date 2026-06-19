@@ -553,11 +553,11 @@ fn push_object_key(output: &mut String, value: &str) {
 }
 
 fn is_valid_type_identifier(value: &str) -> bool {
-    is_valid_identifier(value)
+    is_valid_identifier(value) && !is_reserved_type_identifier(value)
 }
 
 fn is_valid_property_identifier(value: &str) -> bool {
-    is_valid_identifier(value)
+    is_valid_identifier(value) && !is_reserved_type_identifier(value)
 }
 
 fn is_valid_identifier(value: &str) -> bool {
@@ -579,8 +579,110 @@ fn is_identifier_part(ch: char) -> bool {
     is_identifier_start(ch) || ch.is_ascii_digit()
 }
 
+fn is_reserved_type_identifier(value: &str) -> bool {
+    matches!(
+        value,
+        "abstract"
+            | "any"
+            | "as"
+            | "asserts"
+            | "async"
+            | "await"
+            | "bigint"
+            | "boolean"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "constructor"
+            | "continue"
+            | "debugger"
+            | "declare"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "false"
+            | "finally"
+            | "for"
+            | "from"
+            | "function"
+            | "get"
+            | "global"
+            | "if"
+            | "implements"
+            | "import"
+            | "in"
+            | "infer"
+            | "instanceof"
+            | "interface"
+            | "is"
+            | "keyof"
+            | "let"
+            | "module"
+            | "namespace"
+            | "never"
+            | "new"
+            | "null"
+            | "number"
+            | "object"
+            | "of"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "readonly"
+            | "require"
+            | "return"
+            | "set"
+            | "static"
+            | "string"
+            | "super"
+            | "switch"
+            | "symbol"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "type"
+            | "typeof"
+            | "undefined"
+            | "unique"
+            | "unknown"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+    )
+}
+
 fn escape_string_literal(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    let mut output = String::new();
+    for ch in value.chars() {
+        match ch {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\u{2028}' => output.push_str("\\u2028"),
+            '\u{2029}' => output.push_str("\\u2029"),
+            ch if ch.is_control() => {
+                use std::fmt::Write as _;
+                write!(&mut output, "\\u{:04x}", ch as u32)
+                    .expect("writing to a String cannot fail");
+            }
+            ch => output.push(ch),
+        }
+    }
+    output
 }
 
 #[cfg(test)]
@@ -723,7 +825,7 @@ mod tests {
                 .contents()
                 .contains("import type { UserProfile }")
         );
-        assert!(event_file.contents().contains("type: \"userCreated\";"));
+        assert!(event_file.contents().contains("\"type\": \"userCreated\";"));
         assert!(event_file.contents().contains("payload: {"));
         assert!(event_file.contents().contains("user: UserProfile;"));
         assert!(event_file.contents().contains("eventId: string;"));
@@ -785,7 +887,9 @@ mod tests {
             dto_bindgen_core::StructDef::new("AssetEntry", "AssetEntry", span())
                 .with_field(field("content_type", "content-type", TypeRef::String))
                 .with_field(field("dot_key", "metadata.hash", TypeRef::String))
-                .with_field(field("numeric_key", "123value", TypeRef::String)),
+                .with_field(field("numeric_key", "123value", TypeRef::String))
+                .with_field(field("class_name", "class", TypeRef::String))
+                .with_field(field("line_break", "line\nbreak", TypeRef::String)),
         );
         let registry = registry_with_types([(RustTypeId::new("sdk", "AssetEntry"), def)]);
 
@@ -797,6 +901,43 @@ mod tests {
         assert!(contents.contains("\"content-type\": string;"));
         assert!(contents.contains("\"metadata.hash\": string;"));
         assert!(contents.contains("\"123value\": string;"));
+        assert!(contents.contains("\"class\": string;"));
+        assert!(contents.contains("\"line\\nbreak\": string;"));
+    }
+
+    #[test]
+    fn escapes_typescript_string_literals() {
+        let role = TypeDef::Enum(
+            EnumDef::new("UserRole", "UserRole", EnumRepr::External, span())
+                .with_variant(VariantDef::new(
+                    "Quoted",
+                    "admin\"root",
+                    VariantShape::Unit,
+                    span(),
+                ))
+                .with_variant(VariantDef::new(
+                    "Tabbed",
+                    "guest\tuser",
+                    VariantShape::Unit,
+                    span(),
+                ))
+                .with_variant(VariantDef::new(
+                    "LineSeparated",
+                    "line\u{2028}sep",
+                    VariantShape::Unit,
+                    span(),
+                )),
+        );
+        let registry = registry_with_types([(RustTypeId::new("sdk", "UserRole"), role)]);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let contents = find_file(&files, "user_role.ts").contents();
+
+        assert!(contents.contains("\"admin\\\"root\""));
+        assert!(contents.contains("\"guest\\tuser\""));
+        assert!(contents.contains("\"line\\u2028sep\""));
     }
 
     #[test]
@@ -829,6 +970,8 @@ mod tests {
         duplicate.attrs.ts_name = Some("Mf2WebManifest".to_owned());
         let mut invalid = dto_bindgen_core::StructDef::new("BadName", "BadName", span());
         invalid.attrs.ts_name = Some("bad-name".to_owned());
+        let mut reserved = dto_bindgen_core::StructDef::new("ClassName", "ClassName", span());
+        reserved.attrs.ts_name = Some("class".to_owned());
         let registry = registry_with_types([
             (
                 RustTypeId::new("sdk", "BuildManifest"),
@@ -839,6 +982,10 @@ mod tests {
                 TypeDef::Struct(duplicate),
             ),
             (RustTypeId::new("sdk", "BadName"), TypeDef::Struct(invalid)),
+            (
+                RustTypeId::new("sdk", "ClassName"),
+                TypeDef::Struct(reserved),
+            ),
         ]);
 
         let diagnostics = TypeScriptBackend::new().validate(&registry, &Config::default());
