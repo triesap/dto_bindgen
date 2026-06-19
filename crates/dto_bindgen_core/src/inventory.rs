@@ -186,6 +186,7 @@ pub fn build_inventory_report(
     manifest: InventoryManifest,
     inventories: Vec<SourceInventory>,
 ) -> InventoryReport {
+    let roots = sorted_unique(manifest.roots);
     let mut sdk_source_files = manifest.sdk.source_files.clone();
     if sdk_source_files.is_empty() {
         sdk_source_files = inventories
@@ -204,7 +205,7 @@ pub fn build_inventory_report(
             package: manifest.sdk.package,
             source_files: sdk_source_files,
         },
-        roots: sorted_unique(manifest.roots),
+        roots,
         serde: InventorySerdeReport::default(),
         types: InventoryTypesReport::default(),
         typescript: InventoryTargetReport {
@@ -227,7 +228,7 @@ pub fn build_inventory_report(
     }
 
     sort_report(&mut report);
-    report.promotions.deferred = deferred_promotions(&report);
+    report.promotions = promotion_decisions(&report);
     report
 }
 
@@ -577,39 +578,105 @@ fn finding_order(left: &InventoryFinding, right: &InventoryFinding) -> std::cmp:
         .then_with(|| left.attribute.cmp(&right.attribute))
 }
 
-fn deferred_promotions(report: &InventoryReport) -> Vec<PromotionDecision> {
-    let mut decisions = BTreeSet::new();
+fn promotion_decisions(report: &InventoryReport) -> InventoryPromotions {
+    let roots = report
+        .roots
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut required = BTreeSet::new();
+    let mut deferred = BTreeSet::new();
 
     for attr in &report.serde.unsupported_attrs {
-        decisions.insert(PromotionDecision {
+        let decision = PromotionDecision {
             feature: format!("{}::{}", attr.namespace, attr.name),
-            decision: "deferred_until_required".to_owned(),
+            decision: if roots.contains(attr.type_name.as_str()) {
+                "required_promotion"
+            } else {
+                "deferred_until_required"
+            }
+            .to_owned(),
             evidence: format!("{}:{}", attr.location.file, attr.location.line),
-        });
+        };
+        if roots.contains(attr.type_name.as_str()) {
+            required.insert(decision);
+        } else {
+            deferred.insert(decision);
+        }
+    }
+    for field in &report.types.large_integer_fields {
+        let decision = PromotionDecision {
+            feature: format!("large_integer_policy:{}", field.rust_type),
+            decision: if roots.contains(field.type_name.as_str()) {
+                "required_numeric_policy"
+            } else {
+                "deferred_until_required"
+            }
+            .to_owned(),
+            evidence: format!("{}::{}", field.type_name, field.field_name),
+        };
+        if roots.contains(field.type_name.as_str()) {
+            required.insert(decision);
+        } else {
+            deferred.insert(decision);
+        }
     }
     for field in &report.types.third_party_fields {
-        decisions.insert(PromotionDecision {
+        let decision = PromotionDecision {
             feature: format!("third_party_type:{}", field.rust_type),
-            decision: "deferred_until_required".to_owned(),
+            decision: if roots.contains(field.type_name.as_str()) {
+                "required_mapping_review"
+            } else {
+                "deferred_until_required"
+            }
+            .to_owned(),
             evidence: format!("{}::{}", field.type_name, field.field_name),
-        });
+        };
+        if roots.contains(field.type_name.as_str()) {
+            required.insert(decision);
+        } else {
+            deferred.insert(decision);
+        }
     }
     for field in &report.types.custom_fields_without_dto {
-        decisions.insert(PromotionDecision {
+        let decision = PromotionDecision {
             feature: format!("custom_type:{}", field.rust_type),
-            decision: "review_descriptor".to_owned(),
+            decision: if roots.contains(field.type_name.as_str()) {
+                "required_descriptor_review"
+            } else {
+                "review_descriptor"
+            }
+            .to_owned(),
             evidence: format!("{}::{}", field.type_name, field.field_name),
-        });
+        };
+        if roots.contains(field.type_name.as_str()) {
+            required.insert(decision);
+        } else {
+            deferred.insert(decision);
+        }
     }
     for type_name in &report.types.generic_dtos {
-        decisions.insert(PromotionDecision {
+        let decision = PromotionDecision {
             feature: "generic_dtos".to_owned(),
-            decision: "deferred_until_required".to_owned(),
+            decision: if roots.contains(type_name.as_str()) {
+                "required_promotion"
+            } else {
+                "deferred_until_required"
+            }
+            .to_owned(),
             evidence: type_name.clone(),
-        });
+        };
+        if roots.contains(type_name.as_str()) {
+            required.insert(decision);
+        } else {
+            deferred.insert(decision);
+        }
     }
 
-    decisions.into_iter().collect()
+    InventoryPromotions {
+        required: required.into_iter().collect(),
+        deferred: deferred.into_iter().collect(),
+    }
 }
 
 fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
@@ -1679,13 +1746,13 @@ mod tests {
         assert_eq!(report.serde.skipped_fields.len(), 1);
         assert_eq!(report.types.third_party_fields.len(), 1);
         assert_eq!(report.types.large_integer_fields.len(), 1);
-        assert!(
-            report
-                .promotions
-                .deferred
-                .iter()
-                .any(|decision| decision.feature.contains("uuid"))
-        );
+        assert!(report.promotions.required.iter().any(|decision| {
+            decision.feature.contains("uuid") && decision.decision == "required_mapping_review"
+        }));
+        assert!(report.promotions.required.iter().any(|decision| {
+            decision.feature.contains("large_integer_policy")
+                && decision.decision == "required_numeric_policy"
+        }));
     }
 
     #[test]
