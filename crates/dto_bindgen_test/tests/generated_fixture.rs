@@ -58,6 +58,74 @@ struct EventEnvelope {
 }
 
 #[derive(Clone, Serialize, Dto)]
+#[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
+enum ArgType {
+    String,
+    Number,
+    Bool,
+    DateTime,
+    Unit,
+    Currency,
+    Any,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct ArgSpec {
+    name: String,
+    #[serde(rename = "type")]
+    arg_type: ArgType,
+    required: bool,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct MessageSpec {
+    key: String,
+    args: Vec<ArgSpec>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct SourceRef {
+    file: String,
+    line: u32,
+    column: u32,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct CatalogFeatures {
+    select: bool,
+    plural_cardinal: bool,
+    plural_ordinal: bool,
+    formatters: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct CatalogMessage {
+    key: String,
+    id: u32,
+    args: Vec<ArgSpec>,
+    features: CatalogFeatures,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_refs: Option<Vec<SourceRef>>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct Catalog {
+    schema: u32,
+    project: String,
+    generated_at: String,
+    default_locale: String,
+    messages: Vec<CatalogMessage>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct ManifestSigning {
+    sig_alg: String,
+    key_id: String,
+    manifest_sig: String,
+}
+
+#[derive(Clone, Serialize, Dto)]
 #[serde(rename_all = "camelCase")]
 struct PackEntry {
     kind: String,
@@ -85,7 +153,82 @@ struct Manifest {
     schema: u32,
     mf2_packs: BTreeMap<String, PackEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    icu_packs: Option<BTreeMap<String, PackEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    micro_locales: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     budgets: Option<BTreeMap<String, u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signing: Option<ManifestSigning>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+#[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
+enum HybridMessageDelivery {
+    StaticJson,
+    Runtime,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct HybridMessageRoute {
+    id: String,
+    namespace: String,
+    message_path: String,
+    delivery: HybridMessageDelivery,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct HybridMessagePlan {
+    static_messages: Vec<HybridMessageRoute>,
+    runtime_messages: Vec<HybridMessageRoute>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct WebMessageArg {
+    name: String,
+    #[serde(rename = "type")]
+    arg_type: ArgType,
+    required: bool,
+}
+
+#[derive(Clone, Serialize, Dto)]
+struct WebMessageMetadata {
+    id: String,
+    namespace: String,
+    message_path: String,
+    args: Vec<WebMessageArg>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeWebAssets {
+    schema: u32,
+    target: String,
+    mode: String,
+    default_locale: String,
+    supported_locales: Vec<String>,
+    manifest: String,
+    platform_bundle: String,
+    id_map: String,
+    id_map_hash: String,
+    metadata: String,
+    packs: Vec<RuntimeWebPackAsset>,
+}
+
+#[derive(Clone, Serialize, Dto)]
+#[serde(rename_all = "camelCase")]
+struct HybridWebAssets {
+    schema: u32,
+    target: String,
+    mode: String,
+    default_locale: String,
+    supported_locales: Vec<String>,
+    static_messages_root: String,
+    runtime_assets: String,
+    metadata: String,
+    static_message_ids: Vec<String>,
+    runtime_message_ids: Vec<String>,
 }
 
 #[test]
@@ -205,6 +348,9 @@ fn export_is_byte_deterministic_for_generated_fixture() {
     assert!(pack_ts.contains("parent?: string | null;"));
     let manifest_ts = String::from_utf8(first["ts/manifest.ts"].clone()).unwrap();
     assert!(manifest_ts.contains("budgets?: Record<string, number> | null;"));
+    let delivery_ts = String::from_utf8(first["ts/hybrid_message_delivery.ts"].clone()).unwrap();
+    assert!(delivery_ts.contains("\"static-json\""));
+    assert!(delivery_ts.contains("\"runtime\""));
     let user_py = String::from_utf8(first["python/my_sdk_dto/user_profile.py"].clone()).unwrap();
     assert!(user_py.contains("display_name: str | None = field(default=None"));
     assert!(user_py.contains("aliases: list[str] = field(default_factory=list"));
@@ -383,7 +529,10 @@ fn manifest_fixture() -> Manifest {
     Manifest {
         schema: 1,
         mf2_packs,
+        icu_packs: None,
+        micro_locales: None,
         budgets: Some(budgets),
+        signing: None,
     }
 }
 
@@ -391,14 +540,29 @@ fn export_fixture(config_path: &Path) -> dto_bindgen::export::ExportReport {
     dto_bindgen::export_types!(
         config = config_path,
         roots = [
+            ArgSpec,
+            ArgType,
+            Catalog,
+            CatalogFeatures,
+            CatalogMessage,
+            HybridMessageDelivery,
+            HybridMessagePlan,
+            HybridMessageRoute,
+            HybridWebAssets,
+            Manifest,
+            ManifestSigning,
+            MessageSpec,
+            PackEntry,
             PostalAddress,
+            RuntimeWebAssets,
+            RuntimeWebPackAsset,
             UserRole,
             UserProfile,
             SdkEvent,
             EventEnvelope,
-            PackEntry,
-            RuntimeWebPackAsset,
-            Manifest
+            SourceRef,
+            WebMessageArg,
+            WebMessageMetadata
         ],
     )
     .unwrap()

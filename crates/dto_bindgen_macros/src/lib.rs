@@ -706,7 +706,12 @@ fn parse_string_value(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Stri
 
 fn validate_rename_rule(rule: &str, meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<()> {
     match rule {
-        "camelCase" | "snake_case" | "PascalCase" | "SCREAMING_SNAKE_CASE" => Ok(()),
+        "camelCase"
+        | "snake_case"
+        | "PascalCase"
+        | "SCREAMING_SNAKE_CASE"
+        | "lowercase"
+        | "kebab-case" => Ok(()),
         _ => Err(meta.error("unsupported rename_all rule for `Dto` derive")),
     }
 }
@@ -716,6 +721,8 @@ fn apply_rename_rule(rule: &str, rust_name: &str) -> String {
         "camelCase" => to_camel_case(rust_name),
         "PascalCase" => to_pascal_case(rust_name),
         "SCREAMING_SNAKE_CASE" => to_screaming_snake_case(rust_name),
+        "lowercase" => rust_name.to_lowercase(),
+        "kebab-case" => to_kebab_case(rust_name),
         "snake_case" => rust_name.to_owned(),
         _ => rust_name.to_owned(),
     }
@@ -782,6 +789,12 @@ fn to_screaming_snake_case(value: &str) -> String {
     output
 }
 
+fn to_kebab_case(value: &str) -> String {
+    to_screaming_snake_case(value)
+        .to_lowercase()
+        .replace('_', "-")
+}
+
 fn option_string_tokens(value: Option<&str>) -> proc_macro2::TokenStream {
     match value {
         Some(value) => quote!(::std::option::Option::Some(#value.to_owned())),
@@ -810,6 +823,12 @@ mod tests {
         assert_eq!(
             apply_rename_rule("SCREAMING_SNAKE_CASE", "GuestUser"),
             "GUEST_USER"
+        );
+        assert_eq!(apply_rename_rule("lowercase", "DateTime"), "datetime");
+        assert_eq!(apply_rename_rule("kebab-case", "StaticJson"), "static-json");
+        assert_eq!(
+            apply_rename_rule("kebab-case", "static_json"),
+            "static-json"
         );
         assert_eq!(apply_rename_rule("snake_case", "user_id"), "user_id");
     }
