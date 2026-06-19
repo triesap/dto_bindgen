@@ -9,6 +9,7 @@ mod export;
 mod fields;
 mod generated;
 mod identity;
+mod inventory;
 mod registry;
 mod source;
 mod types;
@@ -37,6 +38,11 @@ pub use generated::{
     GeneratedManifestFile, GeneratedPathError, GeneratedRelativePath,
 };
 pub use identity::{GeneratedFileId, Namespace, RustTypeId, TargetTypeName, TypeId};
+pub use inventory::{
+    InventoryAttribute, InventoryField, InventoryFinding, InventoryItem, InventoryItemKind,
+    InventoryLocation, InventoryScanError, InventorySeverity, InventoryTypeClass, InventoryVariant,
+    SourceInventory, scan_rust_source,
+};
 pub use registry::Registry;
 pub use source::{SourceFile, SourcePosition, SourceSpan};
 pub use types::{BytesRepr, Primitive, TargetOverride, TypeRef};

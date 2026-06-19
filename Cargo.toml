@@ -32,7 +32,7 @@ dto_bindgen_backend_ts = { version = "0.1.0", path = "crates/dto_bindgen_backend
 dto_bindgen_core = { version = "0.1.0", path = "crates/dto_bindgen_core" }
 dto_bindgen_macros = { version = "0.1.0", path = "crates/dto_bindgen_macros" }
 dto_bindgen_test = { version = "0.1.0", path = "crates/dto_bindgen_test" }
-proc-macro2 = "1.0"
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
 quote = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

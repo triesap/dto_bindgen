@@ -85,9 +85,12 @@ dependencies = [
 name = "dto_bindgen_core"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
+ "quote",
  "serde",
  "serde_json",
  "sha2",
+ "syn",
  "toml",
 ]
 

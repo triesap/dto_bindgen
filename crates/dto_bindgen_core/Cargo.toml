@@ -15,9 +15,12 @@ categories.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+syn = { workspace = true }
 toml = { workspace = true }
 
 [lints]
