@@ -1,0 +1,30 @@
+[export]
+out_dir = "generated"
+emit_docs = false
+
+[numeric]
+large_int_policy = "require_explicit"
+
+[typescript]
+enabled = true
+out_dir = "generated/ts"
+emit = "ts"
+module_resolution = "bundler"
+import_extension = "none"
+type_only_imports = true
+strict_null_checks_required = true
+style = "dto_bindgen"
+
+[python]
+enabled = true
+out_dir = "generated/python/my_sdk_dto"
+package = "my_sdk_dto"
+mode = "dataclass"
+python_version = "3.11"
+frozen = true
+slots = true
+kw_only = true
+emit_from_dict = true
+emit_to_dict = true
+emit_py_typed = true
+unknown_fields = "ignore"
