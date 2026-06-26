@@ -197,7 +197,12 @@ fn derives_adjacently_tagged_enum_descriptors() {
 
 #[test]
 fn export_types_macro_builds_and_validates_roots() {
-    let config_path = temp_config("");
+    let config_path = temp_config(
+        r#"
+[typescript]
+layout = "per_type"
+"#,
+    );
 
     let report = dto_bindgen::export_types!(
         config = config_path.as_path(),
@@ -236,10 +241,7 @@ fn inventory_preserves_skipped_fields_while_export_omits_them() {
 
     let config_path = temp_config("");
     dto_bindgen::export_types!(config = config_path.as_path(), roots = [UserProfile],).unwrap();
-    let generated = config_path
-        .parent()
-        .unwrap()
-        .join("generated/ts/public_user_profile.ts");
+    let generated = config_path.parent().unwrap().join("generated/ts/types.ts");
     let contents = std::fs::read_to_string(generated).unwrap();
 
     assert!(!contents.contains("internalNote"));

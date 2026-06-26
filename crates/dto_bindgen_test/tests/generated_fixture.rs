@@ -335,20 +335,22 @@ fn export_is_byte_deterministic_for_generated_fixture() {
 
     assert_eq!(first, second);
     assert!(first.contains_key("dto_bindgen.generated.json"));
-    assert!(first.contains_key("ts/user_profile.ts"));
-    assert!(first.contains_key("ts/manifest.ts"));
+    assert!(first.contains_key("ts/types.ts"));
     assert!(first.contains_key("python/my_sdk_dto/user_profile.py"));
     assert!(first.contains_key("python/my_sdk_dto/manifest.py"));
-    let user_ts = String::from_utf8(first["ts/user_profile.ts"].clone()).unwrap();
+    let types_ts = String::from_utf8(first["ts/types.ts"].clone()).unwrap();
+    assert!(types_ts.contains("export type UserProfile"));
+    assert!(types_ts.contains("export type Manifest"));
+    let user_ts = &types_ts;
     assert!(user_ts.contains("displayName?: string | null;"));
     assert!(user_ts.contains("aliases?: Array<string>;"));
     assert!(user_ts.contains("preferences?: Record<string, string>;"));
-    let pack_ts = String::from_utf8(first["ts/pack_entry.ts"].clone()).unwrap();
+    let pack_ts = &types_ts;
     assert!(pack_ts.contains("size: number;"));
     assert!(pack_ts.contains("parent?: string | null;"));
-    let manifest_ts = String::from_utf8(first["ts/manifest.ts"].clone()).unwrap();
+    let manifest_ts = &types_ts;
     assert!(manifest_ts.contains("budgets?: Record<string, number> | null;"));
-    let delivery_ts = String::from_utf8(first["ts/hybrid_message_delivery.ts"].clone()).unwrap();
+    let delivery_ts = &types_ts;
     assert!(delivery_ts.contains("\"static-json\""));
     assert!(delivery_ts.contains("\"runtime\""));
     let user_py = String::from_utf8(first["python/my_sdk_dto/user_profile.py"].clone()).unwrap();

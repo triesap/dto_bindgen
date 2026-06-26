@@ -107,6 +107,8 @@ pub struct TypeScriptConfig {
     pub enabled: bool,
     pub out_dir: String,
     pub wire_contract: TypeScriptWireContract,
+    pub layout: TypeScriptLayout,
+    pub bundle_file: String,
     pub emit: TsEmit,
     pub module_resolution: ModuleResolution,
     pub import_extension: ImportExtension,
@@ -121,6 +123,8 @@ impl Default for TypeScriptConfig {
             enabled: true,
             out_dir: "generated/ts".to_owned(),
             wire_contract: TypeScriptWireContract::JsonExchange,
+            layout: TypeScriptLayout::Bundle,
+            bundle_file: "types.ts".to_owned(),
             emit: TsEmit::Ts,
             module_resolution: ModuleResolution::Bundler,
             import_extension: ImportExtension::None,
@@ -135,6 +139,13 @@ impl Default for TypeScriptConfig {
 #[serde(rename_all = "snake_case")]
 pub enum TypeScriptWireContract {
     JsonExchange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeScriptLayout {
+    Bundle,
+    PerType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -274,6 +285,8 @@ mod tests {
             config.typescript.wire_contract,
             TypeScriptWireContract::JsonExchange
         );
+        assert_eq!(config.typescript.layout, TypeScriptLayout::Bundle);
+        assert_eq!(config.typescript.bundle_file, "types.ts");
         assert_eq!(config.typescript.emit, TsEmit::Ts);
         assert_eq!(
             config.typescript.module_resolution,
@@ -344,6 +357,24 @@ mod tests {
     fn rejects_unsupported_typescript_wire_contracts() {
         let err = Config::from_toml_str("[typescript]\nwire_contract = \"runtime_validator\"\n")
             .unwrap_err();
+
+        assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn parses_typescript_layout_and_bundle_file() {
+        let config = Config::from_toml_str(
+            "[typescript]\nlayout = \"per_type\"\nbundle_file = \"dto-types.ts\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(config.typescript.layout, TypeScriptLayout::PerType);
+        assert_eq!(config.typescript.bundle_file, "dto-types.ts");
+    }
+
+    #[test]
+    fn rejects_unknown_typescript_layouts() {
+        let err = Config::from_toml_str("[typescript]\nlayout = \"single_file\"\n").unwrap_err();
 
         assert!(err.to_string().contains("unknown variant"));
     }

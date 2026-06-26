@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use dto_bindgen_core::{
     Backend, BackendCapabilities, BackendError, BackendId, BytesRepr, Config, Diagnostic,
     DiagnosticCode, EnumDef, EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr,
-    Primitive, Registry, StructDef, TsEmit, TypeDef, TypeId, TypeRef, VariantDef, VariantShape,
-    validate_registry_for_backend,
+    Primitive, Registry, StructDef, TsEmit, TypeDef, TypeId, TypeRef, TypeScriptLayout, VariantDef,
+    VariantShape, validate_registry_for_backend,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -46,39 +46,10 @@ impl Backend for TypeScriptBackend {
             return Ok(GeneratedFileSet::empty());
         }
 
-        let mut files = Vec::new();
-        for (type_id, type_def) in &registry.types_by_id {
-            let contents =
-                render_type_file(*type_id, type_def, registry, config).map_err(|diagnostic| {
-                    BackendError::from_diagnostic(BackendId::TypeScript, diagnostic)
-                })?;
-            let path = type_file_path(type_def, config);
-            let file =
-                GeneratedFile::new(BackendId::TypeScript, path, contents).map_err(|err| {
-                    BackendError::from_diagnostic(
-                        BackendId::TypeScript,
-                        Diagnostic::error(DiagnosticCode::new(701), err.to_string())
-                            .with_backend(BackendId::TypeScript),
-                    )
-                })?;
-            files.push(file);
-        }
-
-        if !registry.types_by_id.is_empty() {
-            let index = GeneratedFile::new(
-                BackendId::TypeScript,
-                index_file_path(config),
-                render_index_file(registry, config),
-            )
-            .map_err(|err| {
-                BackendError::from_diagnostic(
-                    BackendId::TypeScript,
-                    Diagnostic::error(DiagnosticCode::new(701), err.to_string())
-                        .with_backend(BackendId::TypeScript),
-                )
-            })?;
-            files.push(index);
-        }
+        let files = match config.typescript.layout {
+            TypeScriptLayout::Bundle => render_bundle_files(registry, config)?,
+            TypeScriptLayout::PerType => render_per_type_files(registry, config)?,
+        };
 
         GeneratedFileSet::try_from_files(files).map_err(|err| {
             BackendError::from_diagnostic(
@@ -96,6 +67,88 @@ pub fn backend_name() -> &'static str {
 
 pub fn core_version() -> &'static str {
     dto_bindgen_core::VERSION
+}
+
+fn render_per_type_files(
+    registry: &Registry,
+    config: &Config,
+) -> Result<Vec<GeneratedFile>, BackendError> {
+    let mut files = Vec::new();
+    for (type_id, type_def) in sorted_registry_types(registry) {
+        let contents =
+            render_type_file(type_id, type_def, registry, config).map_err(|diagnostic| {
+                BackendError::from_diagnostic(BackendId::TypeScript, diagnostic)
+            })?;
+        files.push(generated_file(type_file_path(type_def, config), contents)?);
+    }
+
+    if !registry.types_by_id.is_empty() {
+        files.push(generated_file(
+            index_file_path(config),
+            render_index_file(registry, config),
+        )?);
+    }
+
+    Ok(files)
+}
+
+fn render_bundle_files(
+    registry: &Registry,
+    config: &Config,
+) -> Result<Vec<GeneratedFile>, BackendError> {
+    if registry.types_by_id.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let contents = render_bundle_file(registry, config)
+        .map_err(|diagnostic| BackendError::from_diagnostic(BackendId::TypeScript, diagnostic))?;
+
+    Ok(vec![
+        generated_file(bundle_file_path(config), contents)?,
+        generated_file(index_file_path(config), render_index_file(registry, config))?,
+    ])
+}
+
+fn generated_file(path: String, contents: String) -> Result<GeneratedFile, BackendError> {
+    GeneratedFile::new(BackendId::TypeScript, path, contents).map_err(|err| {
+        BackendError::from_diagnostic(
+            BackendId::TypeScript,
+            Diagnostic::error(DiagnosticCode::new(701), err.to_string())
+                .with_backend(BackendId::TypeScript),
+        )
+    })
+}
+
+fn sorted_registry_types(registry: &Registry) -> Vec<(TypeId, &TypeDef)> {
+    let mut types = registry
+        .types_by_id
+        .iter()
+        .map(|(type_id, type_def)| (*type_id, type_def))
+        .collect::<Vec<_>>();
+    types.sort_by(|(left_id, left), (right_id, right)| {
+        type_name(left)
+            .cmp(type_name(right))
+            .then_with(|| diagnostic_type_name(left).cmp(diagnostic_type_name(right)))
+            .then_with(|| left_id.cmp(right_id))
+    });
+    types
+}
+
+fn render_bundle_file(registry: &Registry, config: &Config) -> Result<String, Diagnostic> {
+    let mut output = String::new();
+
+    for (index, (_, type_def)) in sorted_registry_types(registry).into_iter().enumerate() {
+        if index > 0 {
+            output.push('\n');
+        }
+
+        match type_def {
+            TypeDef::Struct(def) => render_struct(def, registry, config, &mut output)?,
+            TypeDef::Enum(def) => render_enum(def, registry, config, &mut output)?,
+        }
+    }
+
+    Ok(output)
 }
 
 fn render_type_file(
@@ -494,8 +547,33 @@ fn type_file_path(type_def: &TypeDef, config: &Config) -> String {
     )
 }
 
+fn bundle_file_path(config: &Config) -> String {
+    format!(
+        "{}/{}",
+        config.typescript.out_dir.trim_end_matches('/'),
+        config.typescript.bundle_file
+    )
+}
+
 fn module_specifier(type_def: &TypeDef, config: &Config) -> String {
     let mut specifier = format!("./{}", to_snake_case(type_name(type_def)));
+    if matches!(
+        config.typescript.import_extension,
+        dto_bindgen_core::ImportExtension::Js
+    ) {
+        specifier.push_str(".js");
+    }
+    specifier
+}
+
+fn bundle_module_specifier(config: &Config) -> String {
+    let file = config
+        .typescript
+        .bundle_file
+        .strip_suffix(".d.ts")
+        .or_else(|| config.typescript.bundle_file.strip_suffix(".ts"))
+        .unwrap_or(config.typescript.bundle_file.as_str());
+    let mut specifier = format!("./{file}");
     if matches!(
         config.typescript.import_extension,
         dto_bindgen_core::ImportExtension::Js
@@ -520,12 +598,28 @@ fn index_file_path(config: &Config) -> String {
 fn render_index_file(registry: &Registry, config: &Config) -> String {
     let mut output = String::new();
 
-    for type_def in registry.types_by_id.values() {
-        output.push_str("export type { ");
-        output.push_str(type_name(type_def));
-        output.push_str(" } from \"");
-        output.push_str(&module_specifier(type_def, config));
-        output.push_str("\";\n");
+    match config.typescript.layout {
+        TypeScriptLayout::Bundle => {
+            output.push_str("export type { ");
+            for (index, (_, type_def)) in sorted_registry_types(registry).into_iter().enumerate() {
+                if index > 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(type_name(type_def));
+            }
+            output.push_str(" } from \"");
+            output.push_str(&bundle_module_specifier(config));
+            output.push_str("\";\n");
+        }
+        TypeScriptLayout::PerType => {
+            for (_, type_def) in sorted_registry_types(registry) {
+                output.push_str("export type { ");
+                output.push_str(type_name(type_def));
+                output.push_str(" } from \"");
+                output.push_str(&module_specifier(type_def, config));
+                output.push_str("\";\n");
+            }
+        }
     }
 
     output
@@ -726,11 +820,60 @@ mod tests {
         registry
     }
 
+    fn per_type_config() -> Config {
+        let mut config = Config::default();
+        config.typescript.layout = TypeScriptLayout::PerType;
+        config
+    }
+
     #[test]
     fn identifies_backend() {
         assert_eq!(crate::backend_name(), "typescript");
         assert!(!crate::core_version().is_empty());
         assert_eq!(TypeScriptBackend::new().id(), BackendId::TypeScript);
+    }
+
+    #[test]
+    fn renders_default_bundle_and_type_only_index() {
+        let user = TypeDef::Struct(
+            dto_bindgen_core::StructDef::new("UserProfile", "UserProfile", span())
+                .with_field(field("user_id", "userId", TypeRef::String)),
+        );
+        let role = TypeDef::Enum(
+            EnumDef::new("UserRole", "UserRole", EnumRepr::External, span()).with_variant(
+                VariantDef::new("Admin", "admin", VariantShape::Unit, span()),
+            ),
+        );
+        let registry = registry_with_types([
+            (RustTypeId::new("sdk", "sdk", "UserRole"), role),
+            (RustTypeId::new("sdk", "sdk", "UserProfile"), user),
+        ]);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+
+        assert_eq!(files.len(), 2);
+        let bundle = find_file(&files, "types.ts");
+        let index = find_file(&files, "index.ts");
+        assert!(bundle.contents().contains("export type UserProfile = {"));
+        assert!(bundle.contents().contains("userId: string;"));
+        assert!(
+            bundle
+                .contents()
+                .contains("export type UserRole = \"admin\";")
+        );
+        assert!(
+            index
+                .contents()
+                .contains("export type { UserProfile, UserRole } from \"./types\";")
+        );
+        assert!(
+            !files
+                .files()
+                .iter()
+                .any(|file| file.relative_path().as_str().ends_with("user_profile.ts"))
+        );
     }
 
     #[test]
@@ -765,7 +908,7 @@ mod tests {
         ]);
 
         let files = TypeScriptBackend::new()
-            .render(&registry, &Config::default())
+            .render(&registry, &per_type_config())
             .unwrap();
 
         assert_eq!(files.len(), 3);
@@ -824,7 +967,7 @@ mod tests {
         registry.add_dependency(event_id, user_id);
 
         let files = TypeScriptBackend::new()
-            .render(&registry, &Config::default())
+            .render(&registry, &per_type_config())
             .unwrap();
         let event_file = files
             .files()
@@ -861,7 +1004,7 @@ mod tests {
         let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "LedgerEntry"), def)]);
 
         let files = TypeScriptBackend::new()
-            .render(&registry, &Config::default())
+            .render(&registry, &per_type_config())
             .unwrap();
         let contents = find_file(&files, "ledger_entry.ts").contents();
 
@@ -881,7 +1024,7 @@ mod tests {
         let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "Attachment"), def)]);
 
         let files = TypeScriptBackend::new()
-            .render(&registry, &Config::default())
+            .render(&registry, &per_type_config())
             .unwrap();
         let contents = find_file(&files, "attachment.ts").contents();
 
@@ -935,7 +1078,7 @@ mod tests {
         let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "ProfilePatch"), def)]);
 
         let files = TypeScriptBackend::new()
-            .render(&registry, &Config::default())
+            .render(&registry, &per_type_config())
             .unwrap();
         let contents = find_file(&files, "profile_patch.ts").contents();
 
@@ -958,7 +1101,7 @@ mod tests {
         let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "AssetEntry"), def)]);
 
         let files = TypeScriptBackend::new()
-            .render(&registry, &Config::default())
+            .render(&registry, &per_type_config())
             .unwrap();
         let contents = find_file(&files, "asset_entry.ts").contents();
 
@@ -995,7 +1138,7 @@ mod tests {
         let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "UserRole"), role)]);
 
         let files = TypeScriptBackend::new()
-            .render(&registry, &Config::default())
+            .render(&registry, &per_type_config())
             .unwrap();
         let contents = find_file(&files, "user_role.ts").contents();
 
@@ -1014,7 +1157,7 @@ mod tests {
         )]);
 
         let files = TypeScriptBackend::new()
-            .render(&registry, &Config::default())
+            .render(&registry, &per_type_config())
             .unwrap();
         let manifest = find_file(&files, "mf2_web_manifest.ts");
         let index = find_file(&files, "index.ts");
@@ -1069,7 +1212,7 @@ mod tests {
 
     #[test]
     fn honors_js_import_extension_in_imports_and_index() {
-        let mut config = Config::default();
+        let mut config = per_type_config();
         config.typescript.import_extension = dto_bindgen_core::ImportExtension::Js;
 
         let mut registry = Registry::new();

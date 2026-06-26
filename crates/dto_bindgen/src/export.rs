@@ -274,6 +274,8 @@ out_dir = "generated"
 [typescript]
 enabled = true
 out_dir = "generated/ts"
+layout = "bundle"
+bundle_file = "types.ts"
 
 [python]
 enabled = false
@@ -293,8 +295,8 @@ enabled = false
 
         assert_eq!(report.registry.roots.len(), 1);
         assert!(
-            root.join("generated/ts/simple_dto.ts").is_file(),
-            "expected TypeScript DTO file"
+            root.join("generated/ts/types.ts").is_file(),
+            "expected bundled TypeScript DTO file"
         );
         assert!(
             root.join("generated/ts/index.ts").is_file(),
@@ -307,7 +309,7 @@ enabled = false
         let manifest = fs::read_to_string(root.join("generated/dto_bindgen.generated.json"))
             .expect("manifest should be readable");
         assert!(manifest.contains("\"schema_version\": 1"));
-        assert!(manifest.contains("\"path\": \"ts/simple_dto.ts\""));
+        assert!(manifest.contains("\"path\": \"ts/types.ts\""));
         assert_eq!(report.files.len(), 2);
 
         fs::remove_dir_all(root).unwrap();
@@ -381,11 +383,8 @@ enabled = false
 
         assert_eq!(report.registry.roots.len(), 1);
         assert!(
-            report
-                .files
-                .iter()
-                .any(|path| path.ends_with("simple_dto.ts")),
-            "expected planned TypeScript DTO file"
+            report.files.iter().any(|path| path.ends_with("types.ts")),
+            "expected planned bundled TypeScript DTO file"
         );
         assert!(!generated.exists());
 
