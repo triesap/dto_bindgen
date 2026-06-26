@@ -23,6 +23,7 @@ impl fmt::Display for TypeId {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RustTypeId {
+    pub package_name: String,
     pub crate_name: String,
     pub module_path: Vec<String>,
     pub rust_ident: String,
@@ -30,8 +31,13 @@ pub struct RustTypeId {
 }
 
 impl RustTypeId {
-    pub fn new(crate_name: impl Into<String>, rust_ident: impl Into<String>) -> Self {
+    pub fn new(
+        package_name: impl Into<String>,
+        crate_name: impl Into<String>,
+        rust_ident: impl Into<String>,
+    ) -> Self {
         Self {
+            package_name: package_name.into(),
             crate_name: crate_name.into(),
             module_path: Vec::new(),
             rust_ident: rust_ident.into(),
@@ -55,7 +61,7 @@ impl RustTypeId {
 
 impl fmt::Display for RustTypeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}::", self.crate_name)?;
+        write!(f, "{}:{}::", self.package_name, self.crate_name)?;
         for module in &self.module_path {
             write!(f, "{module}::")?;
         }
@@ -134,11 +140,14 @@ mod tests {
 
     #[test]
     fn formats_rust_type_identity() {
-        let rust_id = RustTypeId::new("sdk", "UserProfile")
+        let rust_id = RustTypeId::new("radroots-sdk", "radroots_sdk", "UserProfile")
             .with_module_path(["types".to_owned(), "identity".to_owned()])
             .with_generic_parameters(["T".to_owned()]);
 
-        assert_eq!(rust_id.to_string(), "sdk::types::identity::UserProfile<T>");
+        assert_eq!(
+            rust_id.to_string(),
+            "radroots-sdk:radroots_sdk::types::identity::UserProfile<T>"
+        );
     }
 
     #[test]

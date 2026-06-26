@@ -128,8 +128,10 @@ mod tests {
     #[test]
     fn registers_types_deterministically() {
         let mut registry = Registry::new();
-        let user = registry.register_type(RustTypeId::new("sdk", "User"), struct_type("User"));
-        let event = registry.register_type(RustTypeId::new("sdk", "Event"), enum_type("Event"));
+        let user =
+            registry.register_type(RustTypeId::new("sdk", "sdk", "User"), struct_type("User"));
+        let event =
+            registry.register_type(RustTypeId::new("sdk", "sdk", "Event"), enum_type("Event"));
 
         assert_eq!(user, TypeId::new(1));
         assert_eq!(event, TypeId::new(2));
@@ -139,9 +141,12 @@ mod tests {
     #[test]
     fn reuses_existing_rust_identity() {
         let mut registry = Registry::new();
-        let first = registry.register_type(RustTypeId::new("sdk", "User"), struct_type("User"));
-        let second =
-            registry.register_type(RustTypeId::new("sdk", "User"), struct_type("UserAgain"));
+        let first =
+            registry.register_type(RustTypeId::new("sdk", "sdk", "User"), struct_type("User"));
+        let second = registry.register_type(
+            RustTypeId::new("sdk", "sdk", "User"),
+            struct_type("UserAgain"),
+        );
 
         assert_eq!(first, second);
         assert_eq!(registry.types_by_id.len(), 1);
@@ -150,9 +155,12 @@ mod tests {
     #[test]
     fn stores_dependency_edges_in_both_directions() {
         let mut registry = Registry::new();
-        let user = registry.register_type(RustTypeId::new("sdk", "User"), struct_type("User"));
-        let address =
-            registry.register_type(RustTypeId::new("sdk", "Address"), struct_type("Address"));
+        let user =
+            registry.register_type(RustTypeId::new("sdk", "sdk", "User"), struct_type("User"));
+        let address = registry.register_type(
+            RustTypeId::new("sdk", "sdk", "Address"),
+            struct_type("Address"),
+        );
 
         registry.add_dependency(user, address);
 
@@ -172,10 +180,14 @@ mod tests {
     #[test]
     fn traverses_transitive_dependencies() {
         let mut registry = Registry::new();
-        let event = registry.register_type(RustTypeId::new("sdk", "Event"), enum_type("Event"));
-        let user = registry.register_type(RustTypeId::new("sdk", "User"), struct_type("User"));
-        let address =
-            registry.register_type(RustTypeId::new("sdk", "Address"), struct_type("Address"));
+        let event =
+            registry.register_type(RustTypeId::new("sdk", "sdk", "Event"), enum_type("Event"));
+        let user =
+            registry.register_type(RustTypeId::new("sdk", "sdk", "User"), struct_type("User"));
+        let address = registry.register_type(
+            RustTypeId::new("sdk", "sdk", "Address"),
+            struct_type("Address"),
+        );
 
         registry.add_dependency(event, user);
         registry.add_dependency(user, address);
@@ -189,7 +201,8 @@ mod tests {
     #[test]
     fn records_roots_names_paths_and_diagnostics() {
         let mut registry = Registry::new();
-        let user = registry.register_type(RustTypeId::new("sdk", "User"), struct_type("User"));
+        let user =
+            registry.register_type(RustTypeId::new("sdk", "sdk", "User"), struct_type("User"));
 
         registry.mark_root(user);
         registry.assign_target_name(

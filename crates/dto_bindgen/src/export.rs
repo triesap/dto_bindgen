@@ -221,7 +221,10 @@ mod tests {
                 TypeRef::String,
                 span(),
             ));
-            ctx.register_type(RustTypeId::new("sdk", "SimpleDto"), TypeDef::Struct(def))
+            ctx.register_type(
+                RustTypeId::new("sdk", "sdk", "SimpleDto"),
+                TypeDef::Struct(def),
+            )
         }
     }
 

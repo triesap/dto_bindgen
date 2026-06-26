@@ -125,6 +125,15 @@ fn derives_named_struct_descriptors() {
     assert_eq!(wire_field(root_struct, "user_id"), Some("userId"));
     assert_eq!(wire_field(root_struct, "active"), Some("enabled"));
 
+    let (root_rust_id, _) = registry
+        .rust_id_to_type_id
+        .iter()
+        .find(|(_, type_id)| **type_id == root)
+        .expect("root should have canonical Rust identity");
+    assert_eq!(root_rust_id.package_name, env!("CARGO_PKG_NAME"));
+    assert_eq!(root_rust_id.crate_name, env!("CARGO_CRATE_NAME"));
+    assert_eq!(root_rust_id.rust_ident, "UserProfile");
+
     let dto_bindgen::export::TypeRef::Named(address_id) = first_named_field(root_def).unwrap()
     else {
         panic!("expected named field ref");

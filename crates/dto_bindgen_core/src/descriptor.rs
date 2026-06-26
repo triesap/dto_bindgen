@@ -268,7 +268,7 @@ mod tests {
             let def = StructDef::new("PostalAddress", "PostalAddress", span(1))
                 .with_field(string_field("line_1", "line1", 2));
             ctx.register_type(
-                RustTypeId::new("sdk", "PostalAddress"),
+                RustTypeId::new("sdk", "sdk", "PostalAddress"),
                 TypeDef::Struct(def),
             )
         }
@@ -286,7 +286,10 @@ mod tests {
                     address_ty,
                     span(12),
                 ));
-            ctx.register_type(RustTypeId::new("sdk", "UserProfile"), TypeDef::Struct(def))
+            ctx.register_type(
+                RustTypeId::new("sdk", "sdk", "UserProfile"),
+                TypeDef::Struct(def),
+            )
         }
     }
 

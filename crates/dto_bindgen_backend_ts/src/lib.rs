@@ -752,8 +752,8 @@ mod tests {
                 )),
         );
         let registry = registry_with_types([
-            (RustTypeId::new("sdk", "UserProfile"), user),
-            (RustTypeId::new("sdk", "UserRole"), role),
+            (RustTypeId::new("sdk", "sdk", "UserProfile"), user),
+            (RustTypeId::new("sdk", "sdk", "UserRole"), role),
         ]);
 
         let files = TypeScriptBackend::new()
@@ -786,7 +786,7 @@ mod tests {
     fn renders_adjacent_tagged_enum_with_imports() {
         let mut registry = Registry::new();
         let user_id = registry.register_type(
-            RustTypeId::new("sdk", "UserProfile"),
+            RustTypeId::new("sdk", "sdk", "UserProfile"),
             TypeDef::Struct(
                 dto_bindgen_core::StructDef::new("UserProfile", "UserProfile", span())
                     .with_field(field("user_id", "userId", TypeRef::String)),
@@ -812,7 +812,7 @@ mod tests {
                 span(),
             )),
         );
-        let event_id = registry.register_type(RustTypeId::new("sdk", "SdkEvent"), event);
+        let event_id = registry.register_type(RustTypeId::new("sdk", "sdk", "SdkEvent"), event);
         registry.add_dependency(event_id, user_id);
 
         let files = TypeScriptBackend::new()
@@ -850,7 +850,7 @@ mod tests {
                 .with_field(amount)
                 .with_field(json_number),
         );
-        let registry = registry_with_types([(RustTypeId::new("sdk", "LedgerEntry"), def)]);
+        let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "LedgerEntry"), def)]);
 
         let files = TypeScriptBackend::new()
             .render(&registry, &Config::default())
@@ -870,7 +870,7 @@ mod tests {
                 TypeRef::Bytes(BytesRepr::Base64String),
             )),
         );
-        let registry = registry_with_types([(RustTypeId::new("sdk", "Attachment"), def)]);
+        let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "Attachment"), def)]);
 
         let files = TypeScriptBackend::new()
             .render(&registry, &Config::default())
@@ -888,7 +888,7 @@ mod tests {
                     field("payload", "payload", TypeRef::Bytes(BytesRepr::Bytes)),
                 ),
             );
-        let registry = registry_with_types([(RustTypeId::new("sdk", "Attachment"), def)]);
+        let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "Attachment"), def)]);
 
         let err = TypeScriptBackend::new()
             .render(&registry, &Config::default())
@@ -916,7 +916,7 @@ mod tests {
             dto_bindgen_core::StructDef::new("ProfilePatch", "ProfilePatch", span())
                 .with_field(field),
         );
-        let registry = registry_with_types([(RustTypeId::new("sdk", "ProfilePatch"), def)]);
+        let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "ProfilePatch"), def)]);
 
         let files = TypeScriptBackend::new()
             .render(&registry, &Config::default())
@@ -936,7 +936,7 @@ mod tests {
                 .with_field(field("class_name", "class", TypeRef::String))
                 .with_field(field("line_break", "line\nbreak", TypeRef::String)),
         );
-        let registry = registry_with_types([(RustTypeId::new("sdk", "AssetEntry"), def)]);
+        let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "AssetEntry"), def)]);
 
         let files = TypeScriptBackend::new()
             .render(&registry, &Config::default())
@@ -973,7 +973,7 @@ mod tests {
                     span(),
                 )),
         );
-        let registry = registry_with_types([(RustTypeId::new("sdk", "UserRole"), role)]);
+        let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "UserRole"), role)]);
 
         let files = TypeScriptBackend::new()
             .render(&registry, &Config::default())
@@ -989,8 +989,10 @@ mod tests {
     fn honors_typescript_target_name_overrides() {
         let mut def = dto_bindgen_core::StructDef::new("Manifest", "Manifest", span());
         def.attrs.ts_name = Some("Mf2WebManifest".to_owned());
-        let registry =
-            registry_with_types([(RustTypeId::new("sdk", "Manifest"), TypeDef::Struct(def))]);
+        let registry = registry_with_types([(
+            RustTypeId::new("sdk", "sdk", "Manifest"),
+            TypeDef::Struct(def),
+        )]);
 
         let files = TypeScriptBackend::new()
             .render(&registry, &Config::default())
@@ -1019,16 +1021,19 @@ mod tests {
         reserved.attrs.ts_name = Some("class".to_owned());
         let registry = registry_with_types([
             (
-                RustTypeId::new("sdk", "BuildManifest"),
+                RustTypeId::new("sdk", "sdk", "BuildManifest"),
                 TypeDef::Struct(first),
             ),
             (
-                RustTypeId::new("sdk", "RuntimeManifest"),
+                RustTypeId::new("sdk", "sdk", "RuntimeManifest"),
                 TypeDef::Struct(duplicate),
             ),
-            (RustTypeId::new("sdk", "BadName"), TypeDef::Struct(invalid)),
             (
-                RustTypeId::new("sdk", "ClassName"),
+                RustTypeId::new("sdk", "sdk", "BadName"),
+                TypeDef::Struct(invalid),
+            ),
+            (
+                RustTypeId::new("sdk", "sdk", "ClassName"),
                 TypeDef::Struct(reserved),
             ),
         ]);
@@ -1050,7 +1055,7 @@ mod tests {
 
         let mut registry = Registry::new();
         let user_id = registry.register_type(
-            RustTypeId::new("sdk", "UserProfile"),
+            RustTypeId::new("sdk", "sdk", "UserProfile"),
             TypeDef::Struct(dto_bindgen_core::StructDef::new(
                 "UserProfile",
                 "UserProfile",
@@ -1062,7 +1067,7 @@ mod tests {
                 dto_bindgen_core::StructDef::new("UserEvent", "UserEvent", span())
                     .with_field(field("user", "user", TypeRef::named(user_id))),
             );
-        registry.register_type(RustTypeId::new("sdk", "UserEvent"), event);
+        registry.register_type(RustTypeId::new("sdk", "sdk", "UserEvent"), event);
 
         let files = TypeScriptBackend::new().render(&registry, &config).unwrap();
         let event = find_file(&files, "user_event.ts");

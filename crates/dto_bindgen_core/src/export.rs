@@ -115,7 +115,10 @@ mod tests {
                 TypeRef::String,
                 span(),
             ));
-            ctx.register_type(RustTypeId::new("sdk", "SimpleDto"), TypeDef::Struct(def))
+            ctx.register_type(
+                RustTypeId::new("sdk", "sdk", "SimpleDto"),
+                TypeDef::Struct(def),
+            )
         }
     }
 
@@ -129,7 +132,10 @@ mod tests {
                     TypeRef::Primitive(Primitive::U128),
                     span(),
                 ));
-            ctx.register_type(RustTypeId::new("sdk", "LargeIntDto"), TypeDef::Struct(def))
+            ctx.register_type(
+                RustTypeId::new("sdk", "sdk", "LargeIntDto"),
+                TypeDef::Struct(def),
+            )
         }
     }
 

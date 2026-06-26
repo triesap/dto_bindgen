@@ -386,7 +386,7 @@ mod tests {
 
     fn registry_with_type(type_def: TypeDef) -> Registry {
         let mut registry = Registry::new();
-        registry.register_type(RustTypeId::new("sdk", "Example"), type_def);
+        registry.register_type(RustTypeId::new("sdk", "sdk", "Example"), type_def);
         registry
     }
 

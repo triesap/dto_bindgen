@@ -168,6 +168,7 @@ fn expand_enum(
                 let __dto_bindgen_rust_id =
                     ::dto_bindgen::__private::RustTypeId::new(
                         env!("CARGO_PKG_NAME"),
+                        env!("CARGO_CRATE_NAME"),
                         stringify!(#ident),
                     )
                     .with_module_path(__dto_bindgen_module_path);
@@ -326,6 +327,7 @@ fn expand_struct(
                 let __dto_bindgen_rust_id =
                     ::dto_bindgen::__private::RustTypeId::new(
                         env!("CARGO_PKG_NAME"),
+                        env!("CARGO_CRATE_NAME"),
                         stringify!(#ident),
                     )
                     .with_module_path(__dto_bindgen_module_path);
@@ -876,6 +878,8 @@ mod tests {
         let tokens = expand_dto(input).expect("expand");
 
         assert!(tokens.to_string().contains("Mf2WebManifest"));
+        assert!(tokens.to_string().contains("CARGO_PKG_NAME"));
+        assert!(tokens.to_string().contains("CARGO_CRATE_NAME"));
     }
 
     #[test]

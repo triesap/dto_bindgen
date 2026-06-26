@@ -887,7 +887,7 @@ mod tests {
                 ),
         );
         let mut registry = Registry::new();
-        registry.register_type(RustTypeId::new("sdk", "UserProfile"), def);
+        registry.register_type(RustTypeId::new("sdk", "sdk", "UserProfile"), def);
 
         let files = PythonBackend::new()
             .render(&registry, &Config::default())
@@ -940,7 +940,7 @@ mod tests {
                 )),
         );
         let mut registry = Registry::new();
-        registry.register_type(RustTypeId::new("sdk", "UserRole"), def);
+        registry.register_type(RustTypeId::new("sdk", "sdk", "UserRole"), def);
 
         let files = PythonBackend::new()
             .render(&registry, &Config::default())
@@ -957,7 +957,7 @@ mod tests {
     fn renders_named_imports_and_json_string_integers() {
         let mut registry = Registry::new();
         let user_id = registry.register_type(
-            RustTypeId::new("sdk", "UserProfile"),
+            RustTypeId::new("sdk", "sdk", "UserProfile"),
             TypeDef::Struct(dto_bindgen_core::StructDef::new(
                 "UserProfile",
                 "UserProfile",
@@ -965,7 +965,7 @@ mod tests {
             )),
         );
         let role_id = registry.register_type(
-            RustTypeId::new("sdk", "UserRole"),
+            RustTypeId::new("sdk", "sdk", "UserRole"),
             TypeDef::Enum(
                 EnumDef::new("UserRole", "UserRole", EnumRepr::External, span()).with_variant(
                     dto_bindgen_core::VariantDef::new(
@@ -989,7 +989,7 @@ mod tests {
                 .with_field(field("role", "role", TypeRef::named(role_id)))
                 .with_field(amount),
         );
-        registry.register_type(RustTypeId::new("sdk", "LedgerEntry"), entry);
+        registry.register_type(RustTypeId::new("sdk", "sdk", "LedgerEntry"), entry);
 
         let files = PythonBackend::new()
             .render(&registry, &Config::default())
@@ -1027,7 +1027,7 @@ mod tests {
     fn renders_adjacent_tagged_enum_helpers() {
         let mut registry = Registry::new();
         let user_id = registry.register_type(
-            RustTypeId::new("sdk", "UserProfile"),
+            RustTypeId::new("sdk", "sdk", "UserProfile"),
             TypeDef::Struct(dto_bindgen_core::StructDef::new(
                 "UserProfile",
                 "UserProfile",
@@ -1054,7 +1054,7 @@ mod tests {
                 span(),
             )),
         );
-        registry.register_type(RustTypeId::new("sdk", "SdkEvent"), event);
+        registry.register_type(RustTypeId::new("sdk", "sdk", "SdkEvent"), event);
 
         let files = PythonBackend::new()
             .render(&registry, &Config::default())
