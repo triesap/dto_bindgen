@@ -572,16 +572,14 @@ fn last_type_ident(ty: &Type) -> Option<&Ident> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IntReprAttr {
     JsonString,
-    JsonNumberUnsafe,
-    NonJsonBigint,
+    JsonNumber,
 }
 
 impl IntReprAttr {
     fn parse(value: &str, meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Self> {
         match value {
             "json_string" => Ok(Self::JsonString),
-            "json_number_unsafe" => Ok(Self::JsonNumberUnsafe),
-            "non_json_bigint" => Ok(Self::NonJsonBigint),
+            "json_number" => Ok(Self::JsonNumber),
             _ => Err(meta.error("unsupported dto int_repr value")),
         }
     }
@@ -589,10 +587,7 @@ impl IntReprAttr {
     fn tokens(self) -> proc_macro2::TokenStream {
         match self {
             Self::JsonString => quote!(::dto_bindgen::__private::IntRepr::JsonString),
-            Self::JsonNumberUnsafe => {
-                quote!(::dto_bindgen::__private::IntRepr::JsonNumberUnsafe)
-            }
-            Self::NonJsonBigint => quote!(::dto_bindgen::__private::IntRepr::NonJsonBigint),
+            Self::JsonNumber => quote!(::dto_bindgen::__private::IntRepr::JsonNumber),
         }
     }
 }
@@ -1018,6 +1013,34 @@ mod tests {
         let err = expand_dto(input).unwrap_err();
 
         assert!(err.to_string().contains("serde(default) is supported only"));
+    }
+
+    #[test]
+    fn accepts_json_number_int_repr_values() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct LedgerEntry {
+                #[dto(int_repr = "json_number")]
+                sequence: u64,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand");
+
+        assert!(tokens.to_string().contains("JsonNumber"));
+    }
+
+    #[test]
+    fn rejects_legacy_non_json_int_repr_values() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct LedgerEntry {
+                #[dto(int_repr = "non_json_bigint")]
+                sequence: u64,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("unsupported dto int_repr"));
     }
 
     #[test]

@@ -577,7 +577,7 @@ fn write_config(root: &Path) -> PathBuf {
 out_dir = "generated"
 
 [numeric]
-large_int_policy = "json_number_unsafe"
+large_int_policy = "json_number"
 
 [typescript]
 enabled = true

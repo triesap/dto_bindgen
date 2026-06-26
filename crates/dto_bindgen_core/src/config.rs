@@ -3,18 +3,35 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub schema_version: u32,
     pub export: ExportConfig,
     pub numeric: NumericConfig,
     pub typescript: TypeScriptConfig,
     pub python: PythonConfig,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            schema_version: CONFIG_SCHEMA_VERSION,
+            export: ExportConfig::default(),
+            numeric: NumericConfig::default(),
+            typescript: TypeScriptConfig::default(),
+            python: PythonConfig::default(),
+        }
+    }
+}
+
 impl Config {
     pub fn from_toml_str(input: &str) -> Result<Self, ConfigError> {
-        toml::from_str(input).map_err(ConfigError::Toml)
+        let config: Self = toml::from_str(input).map_err(ConfigError::Toml)?;
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn from_toml_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
@@ -25,6 +42,17 @@ impl Config {
         })?;
         Self::from_toml_str(&input)
     }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.schema_version != CONFIG_SCHEMA_VERSION {
+            return Err(ConfigError::UnsupportedSchemaVersion {
+                found: self.schema_version,
+                supported: CONFIG_SCHEMA_VERSION,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -32,6 +60,7 @@ impl Config {
 pub struct ExportConfig {
     pub out_dir: String,
     pub emit_docs: bool,
+    pub wire_format: WireFormat,
 }
 
 impl Default for ExportConfig {
@@ -39,8 +68,15 @@ impl Default for ExportConfig {
         Self {
             out_dir: "generated".to_owned(),
             emit_docs: false,
+            wire_format: WireFormat::Json,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireFormat {
+    Json,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -62,8 +98,7 @@ impl Default for NumericConfig {
 pub enum LargeIntPolicy {
     RequireExplicit,
     JsonString,
-    JsonNumberUnsafe,
-    NonJsonBigint,
+    JsonNumber,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -71,6 +106,7 @@ pub enum LargeIntPolicy {
 pub struct TypeScriptConfig {
     pub enabled: bool,
     pub out_dir: String,
+    pub wire_contract: TypeScriptWireContract,
     pub emit: TsEmit,
     pub module_resolution: ModuleResolution,
     pub import_extension: ImportExtension,
@@ -84,6 +120,7 @@ impl Default for TypeScriptConfig {
         Self {
             enabled: true,
             out_dir: "generated/ts".to_owned(),
+            wire_contract: TypeScriptWireContract::JsonExchange,
             emit: TsEmit::Ts,
             module_resolution: ModuleResolution::Bundler,
             import_extension: ImportExtension::None,
@@ -92,6 +129,12 @@ impl Default for TypeScriptConfig {
             style: TypeScriptStyle::DtoBindgen,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeScriptWireContract {
+    JsonExchange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -180,6 +223,10 @@ pub enum ConfigError {
         source: std::io::Error,
     },
     Toml(toml::de::Error),
+    UnsupportedSchemaVersion {
+        found: u32,
+        supported: u32,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -189,6 +236,10 @@ impl fmt::Display for ConfigError {
                 write!(f, "failed to read config {}: {source}", path.display())
             }
             Self::Toml(source) => write!(f, "failed to parse config: {source}"),
+            Self::UnsupportedSchemaVersion { found, supported } => write!(
+                f,
+                "unsupported config schema_version {found}; supported schema_version is {supported}"
+            ),
         }
     }
 }
@@ -198,6 +249,7 @@ impl std::error::Error for ConfigError {
         match self {
             Self::Read { source, .. } => Some(source),
             Self::Toml(source) => Some(source),
+            Self::UnsupportedSchemaVersion { .. } => None,
         }
     }
 }
@@ -211,10 +263,16 @@ mod tests {
     #[test]
     fn defaults_match_handoff_example() {
         let config = Config::default();
+        assert_eq!(config.schema_version, CONFIG_SCHEMA_VERSION);
         assert_eq!(config.export.out_dir, "generated");
+        assert_eq!(config.export.wire_format, WireFormat::Json);
         assert_eq!(
             config.numeric.large_int_policy,
             LargeIntPolicy::RequireExplicit
+        );
+        assert_eq!(
+            config.typescript.wire_contract,
+            TypeScriptWireContract::JsonExchange
         );
         assert_eq!(config.typescript.emit, TsEmit::Ts);
         assert_eq!(
@@ -242,6 +300,68 @@ mod tests {
     fn uses_defaults_for_missing_sections() {
         let config = Config::from_toml_str("").unwrap();
         assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn parses_explicit_schema_version_and_wire_format() {
+        let config =
+            Config::from_toml_str("schema_version = 1\n\n[export]\nwire_format = \"json\"\n")
+                .unwrap();
+
+        assert_eq!(config.schema_version, CONFIG_SCHEMA_VERSION);
+        assert_eq!(config.export.wire_format, WireFormat::Json);
+    }
+
+    #[test]
+    fn rejects_unknown_schema_versions() {
+        let err = Config::from_toml_str("schema_version = 2\n").unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported config schema_version")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_wire_formats() {
+        let err = Config::from_toml_str("[export]\nwire_format = \"message_pack\"\n").unwrap_err();
+
+        assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn parses_typescript_json_exchange_contract() {
+        let config =
+            Config::from_toml_str("[typescript]\nwire_contract = \"json_exchange\"\n").unwrap();
+
+        assert_eq!(
+            config.typescript.wire_contract,
+            TypeScriptWireContract::JsonExchange
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_typescript_wire_contracts() {
+        let err = Config::from_toml_str("[typescript]\nwire_contract = \"runtime_validator\"\n")
+            .unwrap_err();
+
+        assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn parses_json_safe_large_integer_policy() {
+        let config =
+            Config::from_toml_str("[numeric]\nlarge_int_policy = \"json_number\"\n").unwrap();
+
+        assert_eq!(config.numeric.large_int_policy, LargeIntPolicy::JsonNumber);
+    }
+
+    #[test]
+    fn rejects_legacy_non_json_large_integer_policy() {
+        let err = Config::from_toml_str("[numeric]\nlarge_int_policy = \"non_json_bigint\"\n")
+            .unwrap_err();
+
+        assert!(err.to_string().contains("unknown variant"));
     }
 
     #[test]

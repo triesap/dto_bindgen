@@ -151,8 +151,7 @@ pub enum DefaultKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IntRepr {
     JsonString,
-    JsonNumberUnsafe,
-    NonJsonBigint,
+    JsonNumber,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

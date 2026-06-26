@@ -42,9 +42,12 @@ The export call is intentionally explicit. The CLI does not scan crates for root
 ## Configuration
 
 ```toml
+schema_version = 1
+
 [export]
 out_dir = "generated"
 emit_docs = false
+wire_format = "json"
 
 [numeric]
 large_int_policy = "require_explicit"
@@ -52,6 +55,7 @@ large_int_policy = "require_explicit"
 [typescript]
 enabled = true
 out_dir = "generated/ts"
+wire_contract = "json_exchange"
 emit = "ts"
 module_resolution = "bundler"
 import_extension = "none"
@@ -107,13 +111,13 @@ Rust/Serde support:
 DTO-specific support:
 
 - `#[dto(skip)]`
-- `#[dto(int_repr = "json_string" | "json_number_unsafe" | "non_json_bigint")]`
+- `#[dto(int_repr = "json_string" | "json_number")]`
 
 Unsupported behavior fails closed with diagnostics. MVP non-goals include whole-crate discovery, `flatten`, `untagged`, custom `serde(default = "...")` functions, custom `skip_serializing_if` predicates, arbitrary custom serializers, Pydantic, JSON Schema/OpenAPI, Swift/Kotlin backends, and UniFFI integration.
 
 ## Numeric Policy
 
-Large Rust integers do not silently map to unsafe JSON-facing target types. With the default policy, fields such as `u64`, `i128`, and `u128` require an explicit `#[dto(int_repr = "...")]` override.
+Large Rust integers do not silently map to JSON-facing target types. With the default policy, fields such as `u64`, `i128`, and `u128` require an explicit `#[dto(int_repr = "...")]` override.
 
 ```rust
 #[derive(dto_bindgen::Dto)]

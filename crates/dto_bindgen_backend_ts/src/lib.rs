@@ -4,9 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use dto_bindgen_core::{
-    Backend, BackendError, BackendId, Config, Diagnostic, DiagnosticCode, EnumDef, EnumRepr,
-    FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry, SerializePresence,
-    StructDef, TsEmit, TypeDef, TypeId, TypeRef, VariantDef, VariantShape,
+    Backend, BackendError, BackendId, BytesRepr, Config, Diagnostic, DiagnosticCode, EnumDef,
+    EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry,
+    SerializePresence, StructDef, TsEmit, TypeDef, TypeId, TypeRef, VariantDef, VariantShape,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +268,13 @@ fn render_type_ref(
     match ty {
         TypeRef::Primitive(primitive) => render_primitive(*primitive, int_repr, config, field),
         TypeRef::String => Ok("string".to_owned()),
-        TypeRef::Bytes(_) => Ok("Uint8Array".to_owned()),
+        TypeRef::Bytes(BytesRepr::Base64String) => Ok("string".to_owned()),
+        TypeRef::Bytes(BytesRepr::Bytes) => Err(Diagnostic::error(
+            DiagnosticCode::new(402),
+            "raw bytes are unsupported for JSON DTO exchange",
+        )
+        .with_field(field.rust_name.to_string())
+        .with_backend(BackendId::TypeScript)),
         TypeRef::Option(inner) => Ok(format!(
             "{} | null",
             render_type_ref(inner, int_repr, registry, config, field)?
@@ -321,8 +327,7 @@ fn render_primitive(
     if primitive.requires_explicit_integer_policy() {
         return match int_repr {
             Some(IntRepr::JsonString) => Ok("string".to_owned()),
-            Some(IntRepr::JsonNumberUnsafe) => Ok("number".to_owned()),
-            Some(IntRepr::NonJsonBigint) => Ok("bigint".to_owned()),
+            Some(IntRepr::JsonNumber) => Ok("number".to_owned()),
             None => match config.numeric.large_int_policy {
                 dto_bindgen_core::LargeIntPolicy::RequireExplicit => Err(Diagnostic::error(
                     DiagnosticCode::new(401),
@@ -331,8 +336,7 @@ fn render_primitive(
                 .with_field(field.rust_name.to_string())
                 .with_backend(BackendId::TypeScript)),
                 dto_bindgen_core::LargeIntPolicy::JsonString => Ok("string".to_owned()),
-                dto_bindgen_core::LargeIntPolicy::JsonNumberUnsafe => Ok("number".to_owned()),
-                dto_bindgen_core::LargeIntPolicy::NonJsonBigint => Ok("bigint".to_owned()),
+                dto_bindgen_core::LargeIntPolicy::JsonNumber => Ok("number".to_owned()),
             },
         };
     }
@@ -839,12 +843,12 @@ mod tests {
             TypeRef::Primitive(Primitive::U128),
         )
         .with_int_repr(IntRepr::JsonString);
-        let unsafe_number = field("sequence", "sequence", TypeRef::Primitive(Primitive::U64))
-            .with_int_repr(IntRepr::JsonNumberUnsafe);
+        let json_number = field("sequence", "sequence", TypeRef::Primitive(Primitive::U64))
+            .with_int_repr(IntRepr::JsonNumber);
         let def = TypeDef::Struct(
             dto_bindgen_core::StructDef::new("LedgerEntry", "LedgerEntry", span())
                 .with_field(amount)
-                .with_field(unsafe_number),
+                .with_field(json_number),
         );
         let registry = registry_with_types([(RustTypeId::new("sdk", "LedgerEntry"), def)]);
 
@@ -855,6 +859,47 @@ mod tests {
 
         assert!(contents.contains("amountMinorUnits: string;"));
         assert!(contents.contains("sequence: number;"));
+    }
+
+    #[test]
+    fn renders_base64_bytes_as_strings() {
+        let def = TypeDef::Struct(
+            dto_bindgen_core::StructDef::new("Attachment", "Attachment", span()).with_field(field(
+                "payload",
+                "payload",
+                TypeRef::Bytes(BytesRepr::Base64String),
+            )),
+        );
+        let registry = registry_with_types([(RustTypeId::new("sdk", "Attachment"), def)]);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let contents = find_file(&files, "attachment.ts").contents();
+
+        assert!(contents.contains("payload: string;"));
+    }
+
+    #[test]
+    fn rejects_raw_bytes_for_json_exchange() {
+        let def =
+            TypeDef::Struct(
+                dto_bindgen_core::StructDef::new("Attachment", "Attachment", span()).with_field(
+                    field("payload", "payload", TypeRef::Bytes(BytesRepr::Bytes)),
+                ),
+            );
+        let registry = registry_with_types([(RustTypeId::new("sdk", "Attachment"), def)]);
+
+        let err = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap_err();
+
+        assert_eq!(err.diagnostics()[0].code, DiagnosticCode::new(402));
+        assert!(
+            err.diagnostics()[0]
+                .message
+                .contains("raw bytes are unsupported")
+        );
     }
 
     #[test]

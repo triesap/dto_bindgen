@@ -18,9 +18,9 @@ mod writer;
 
 pub use backend::{Backend, BackendError, BackendId, ParseBackendIdError};
 pub use config::{
-    Config, ConfigError, ExportConfig, ImportExtension, LargeIntPolicy, ModuleResolution,
-    NumericConfig, PythonConfig, PythonMode, TsEmit, TypeScriptConfig, TypeScriptStyle,
-    UnknownFieldsPolicy,
+    CONFIG_SCHEMA_VERSION, Config, ConfigError, ExportConfig, ImportExtension, LargeIntPolicy,
+    ModuleResolution, NumericConfig, PythonConfig, PythonMode, TsEmit, TypeScriptConfig,
+    TypeScriptStyle, TypeScriptWireContract, UnknownFieldsPolicy, WireFormat,
 };
 pub use definitions::{
     ContainerAttrs, EnumDef, EnumRepr, FieldDef, GenericParam, StructDef, TypeDef, VariantDef,

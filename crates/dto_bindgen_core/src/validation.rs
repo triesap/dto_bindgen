@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Config, DefaultKind, Diagnostic, DiagnosticCode, EnumDef, EnumRepr, FieldDef, FlattenMode,
-    LargeIntPolicy, Primitive, Registry, SerializePresence, StructDef, TypeDef, TypeRef,
-    VariantDef, VariantShape,
+    BytesRepr, Config, DefaultKind, Diagnostic, DiagnosticCode, EnumDef, EnumRepr, FieldDef,
+    FlattenMode, LargeIntPolicy, Primitive, Registry, SerializePresence, StructDef, TypeDef,
+    TypeRef, VariantDef, VariantShape, WireFormat,
 };
 
 pub fn validate_registry(registry: &Registry, config: &Config) -> Vec<Diagnostic> {
@@ -257,7 +257,10 @@ fn validate_type_ref(
                 diagnostics,
             );
         }
-        TypeRef::String | TypeRef::Bytes(_) | TypeRef::Named(_) | TypeRef::GenericParam(_) => {}
+        TypeRef::String | TypeRef::Named(_) | TypeRef::GenericParam(_) => {}
+        TypeRef::Bytes(repr) => {
+            validate_bytes(type_name, variant_name, field, *repr, config, diagnostics)
+        }
         TypeRef::Option(inner) | TypeRef::Vec(inner) => {
             validate_type_ref(type_name, variant_name, field, inner, config, diagnostics);
         }
@@ -280,6 +283,28 @@ fn validate_type_ref(
             validate_type_ref(type_name, variant_name, field, value, config, diagnostics);
         }
         TypeRef::Override(_) => {}
+    }
+}
+
+fn validate_bytes(
+    type_name: &str,
+    variant_name: Option<&str>,
+    field: &FieldDef,
+    repr: BytesRepr,
+    config: &Config,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if config.export.wire_format == WireFormat::Json && repr == BytesRepr::Bytes {
+        diagnostics.push(
+            field_diagnostic(
+                DiagnosticCode::new(402),
+                "raw bytes are unsupported for JSON DTO exchange",
+                type_name,
+                variant_name,
+                field,
+            )
+            .with_help("Use an explicit JSON-safe bytes representation such as base64 string."),
+        );
     }
 }
 
@@ -456,6 +481,35 @@ mod tests {
                 field("amount", "amount", TypeRef::Primitive(Primitive::U128))
                     .with_int_repr(crate::IntRepr::JsonString),
             ),
+        ));
+
+        assert!(registry.validate(&Config::default()).is_empty());
+    }
+
+    #[test]
+    fn rejects_raw_bytes_for_json_wire_format() {
+        let registry = registry_with_type(TypeDef::Struct(
+            StructDef::new("Attachment", "Attachment", span(1)).with_field(field(
+                "payload",
+                "payload",
+                TypeRef::Bytes(BytesRepr::Bytes),
+            )),
+        ));
+
+        let diagnostics = registry.validate(&Config::default());
+
+        assert_eq!(diagnostics[0].code, DiagnosticCode::new(402));
+        assert_eq!(diagnostics[0].field_name.as_deref(), Some("payload"));
+    }
+
+    #[test]
+    fn allows_base64_bytes_for_json_wire_format() {
+        let registry = registry_with_type(TypeDef::Struct(
+            StructDef::new("Attachment", "Attachment", span(1)).with_field(field(
+                "payload",
+                "payload",
+                TypeRef::Bytes(BytesRepr::Base64String),
+            )),
         ));
 
         assert!(registry.validate(&Config::default()).is_empty());
