@@ -36,6 +36,7 @@ pub struct ExportReport {
 #[derive(Debug)]
 pub enum ExportError {
     Config(ConfigError),
+    CanonicalRegistry(serde_json::Error),
     Diagnostics(Vec<Diagnostic>),
     Backend(BackendError),
     GeneratedFiles(GeneratedFileSetError),
@@ -69,6 +70,9 @@ impl fmt::Display for ExportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Config(source) => write!(f, "{source}"),
+            Self::CanonicalRegistry(source) => {
+                write!(f, "failed to serialize canonical registry: {source}")
+            }
             Self::Diagnostics(diagnostics) => {
                 write!(f, "export failed with {} diagnostic(s)", diagnostics.len())
             }
@@ -83,6 +87,7 @@ impl std::error::Error for ExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Config(source) => Some(source),
+            Self::CanonicalRegistry(source) => Some(source),
             Self::Diagnostics(_) => None,
             Self::Backend(source) => Some(source),
             Self::GeneratedFiles(source) => Some(source),

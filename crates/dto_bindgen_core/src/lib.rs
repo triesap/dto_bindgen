@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod canonical;
 mod config;
 mod definitions;
 mod descriptor;
@@ -17,6 +18,7 @@ mod validation;
 mod writer;
 
 pub use backend::{Backend, BackendError, BackendId, ParseBackendIdError};
+pub use canonical::{CanonicalRegistry, canonical_registry_json_bytes, canonical_registry_sha256};
 pub use config::{
     CONFIG_SCHEMA_VERSION, Config, ConfigError, ExportConfig, ImportExtension, LargeIntPolicy,
     ModuleResolution, NumericConfig, PythonConfig, PythonMode, TsEmit, TypeScriptConfig,

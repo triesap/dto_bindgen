@@ -839,6 +839,7 @@ mod tests {
         fs::write(root.path().join("generated/ts/user.ts"), "keep\n").unwrap();
         let manifest = GeneratedManifest {
             generator: "dto_bindgen".to_owned(),
+            schema_version: crate::CONFIG_SCHEMA_VERSION,
             version: "0.1.0".to_owned(),
             registry_hash: "registry".to_owned(),
             config_hash: "config".to_owned(),

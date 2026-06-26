@@ -554,6 +554,7 @@ mod tests {
             generated.join("dto_bindgen.generated.json"),
             r#"{
   "generator": "dto_bindgen",
+  "schema_version": 1,
   "version": "0.1.0",
   "registry_hash": "registry",
   "config_hash": "config",

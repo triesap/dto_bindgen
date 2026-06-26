@@ -5,7 +5,7 @@ use dto_bindgen_backend_python::PythonBackend;
 use dto_bindgen_backend_ts::TypeScriptBackend;
 use dto_bindgen_core::{
     Backend, Config, ConfigError, Diagnostic, DiagnosticCode, GeneratedFile, GeneratedFileSet,
-    GeneratedManifest, OutputWriter,
+    GeneratedManifest, OutputWriter, canonical_registry_sha256,
 };
 use sha2::{Digest, Sha256};
 
@@ -31,7 +31,7 @@ pub fn export_with_roots(
     let writer_files = strip_output_root(&generated_files, &config)?;
     let manifest = GeneratedManifest::from_file_set(
         VERSION,
-        sha256_hex(format!("{registry:#?}").as_bytes()),
+        canonical_registry_sha256(&registry).map_err(ExportError::CanonicalRegistry)?,
         sha256_hex(config_input.as_bytes()),
         &writer_files,
     );
@@ -211,6 +211,7 @@ mod tests {
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     struct SimpleDto;
+    struct OtherDto;
 
     impl Dto for SimpleDto {
         fn describe(ctx: &mut DescribeCtx) -> TypeRef {
@@ -223,6 +224,22 @@ mod tests {
             ));
             ctx.register_type(
                 RustTypeId::new("sdk", "sdk", "SimpleDto"),
+                TypeDef::Struct(def),
+            )
+        }
+    }
+
+    impl Dto for OtherDto {
+        fn describe(ctx: &mut DescribeCtx) -> TypeRef {
+            let def = StructDef::new("OtherDto", "OtherDto", span()).with_field(FieldDef::new(
+                IdentName::new("label"),
+                WireFieldNames::same("label"),
+                TargetFieldNames::new("label", "label"),
+                TypeRef::String,
+                span(),
+            ));
+            ctx.register_type(
+                RustTypeId::new("sdk", "sdk", "OtherDto"),
                 TypeDef::Struct(def),
             )
         }
@@ -289,10 +306,44 @@ enabled = false
         );
         let manifest = fs::read_to_string(root.join("generated/dto_bindgen.generated.json"))
             .expect("manifest should be readable");
+        assert!(manifest.contains("\"schema_version\": 1"));
         assert!(manifest.contains("\"path\": \"ts/simple_dto.ts\""));
         assert_eq!(report.files.len(), 2);
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn manifest_registry_hash_is_stable_across_root_ordering() {
+        let first_root = temp_project();
+        let first_config = write_config(&first_root);
+        export_with_roots(
+            ExportOptions::new(first_config.clone()),
+            [
+                RootDescriptor::new::<SimpleDto>(),
+                RootDescriptor::new::<OtherDto>(),
+            ],
+        )
+        .unwrap();
+
+        let second_root = temp_project();
+        let second_config = write_config(&second_root);
+        export_with_roots(
+            ExportOptions::new(second_config.clone()),
+            [
+                RootDescriptor::new::<OtherDto>(),
+                RootDescriptor::new::<SimpleDto>(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            manifest_registry_hash(&first_root),
+            manifest_registry_hash(&second_root)
+        );
+
+        fs::remove_dir_all(first_root).unwrap();
+        fs::remove_dir_all(second_root).unwrap();
     }
 
     #[test]
@@ -362,5 +413,16 @@ enabled = false
         assert!(!generated.exists());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn manifest_registry_hash(root: &Path) -> String {
+        let manifest = fs::read_to_string(root.join("generated/dto_bindgen.generated.json"))
+            .expect("manifest should be readable");
+        manifest
+            .lines()
+            .find(|line| line.contains("\"registry_hash\""))
+            .expect("manifest should contain registry_hash")
+            .trim()
+            .to_owned()
     }
 }

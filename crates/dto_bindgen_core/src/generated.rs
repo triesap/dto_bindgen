@@ -234,6 +234,7 @@ impl std::error::Error for GeneratedFileSetError {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeneratedManifest {
     pub generator: String,
+    pub schema_version: u32,
     pub version: String,
     pub registry_hash: String,
     pub config_hash: String,
@@ -249,6 +250,7 @@ impl GeneratedManifest {
     ) -> Self {
         Self {
             generator: "dto_bindgen".to_owned(),
+            schema_version: crate::CONFIG_SCHEMA_VERSION,
             version: version.into(),
             registry_hash: registry_hash.into(),
             config_hash: config_hash.into(),
@@ -386,6 +388,7 @@ mod tests {
             GeneratedManifest::from_file_set("0.1.0", "registry-hash", "config-hash", &set);
 
         assert_eq!(manifest.generator, "dto_bindgen");
+        assert_eq!(manifest.schema_version, crate::CONFIG_SCHEMA_VERSION);
         assert_eq!(manifest.version, "0.1.0");
         assert_eq!(manifest.registry_hash, "registry-hash");
         assert_eq!(manifest.config_hash, "config-hash");
