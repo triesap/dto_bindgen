@@ -394,7 +394,7 @@ impl StructContainerAttrs {
 
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("rename") {
-                    parsed.rename = Some(parse_string_value(&meta)?);
+                    parsed.rename = Some(parse_serde_rename_value(&meta)?);
                     Ok(())
                 } else if meta.path.is_ident("rename_all") {
                     let rule = parse_string_value(&meta)?;
@@ -411,8 +411,7 @@ impl StructContainerAttrs {
                             "custom serde container default paths are unsupported for `Dto` derive",
                         ))
                     } else {
-                        parsed.default = true;
-                        Ok(())
+                        Err(meta.error("serde container default is unsupported for `Dto` derive"))
                     }
                 } else {
                     Err(meta.error("unsupported serde container attribute for `Dto` derive"))
@@ -467,7 +466,7 @@ impl FieldAttrs {
 
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("rename") {
-                    parsed.rename = Some(parse_string_value(&meta)?);
+                    parsed.rename = Some(parse_serde_rename_value(&meta)?);
                     Ok(())
                 } else if meta.path.is_ident("default") {
                     if meta.input.peek(Token![=]) {
@@ -491,6 +490,14 @@ impl FieldAttrs {
                             "only serde(skip_serializing_if = \"Option::is_none\") is supported for `Dto` derive",
                         ))
                     }
+                } else if meta.path.is_ident("alias") {
+                    Err(meta.error("unsupported serde field attribute `alias` for `Dto` derive"))
+                } else if meta.path.is_ident("skip_serializing")
+                    || meta.path.is_ident("skip_deserializing")
+                {
+                    Err(meta.error(
+                        "split-direction serde skip attributes are unsupported for `Dto` derive",
+                    ))
                 } else {
                     Err(meta.error("unsupported serde field attribute for `Dto` derive"))
                 }
@@ -620,7 +627,7 @@ impl EnumContainerAttrs {
 
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("rename") {
-                    parsed.rename = Some(parse_string_value(&meta)?);
+                    parsed.rename = Some(parse_serde_rename_value(&meta)?);
                     Ok(())
                 } else if meta.path.is_ident("rename_all") {
                     let rule = parse_string_value(&meta)?;
@@ -685,7 +692,7 @@ impl VariantAttrs {
 
             attr.parse_nested_meta(|meta| {
                 if meta.path.is_ident("rename") {
-                    parsed.rename = Some(parse_string_value(&meta)?);
+                    parsed.rename = Some(parse_serde_rename_value(&meta)?);
                     Ok(())
                 } else {
                     Err(meta.error("unsupported serde variant attribute for `Dto` derive"))
@@ -718,6 +725,14 @@ fn parse_string_value(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Stri
     let value = meta.value()?;
     let literal: LitStr = value.parse()?;
     Ok(literal.value())
+}
+
+fn parse_serde_rename_value(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<String> {
+    if meta.input.peek(Token![=]) {
+        parse_string_value(meta)
+    } else {
+        Err(meta.error("split serialize/deserialize rename is unsupported for `Dto` derive"))
+    }
 }
 
 fn validate_rename_rule(rule: &str, meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<()> {
@@ -975,6 +990,74 @@ mod tests {
     }
 
     #[test]
+    fn rejects_split_rename_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Metadata {
+                #[serde(rename(serialize = "publicName", deserialize = "public_name"))]
+                public_name: String,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("split serialize/deserialize rename")
+        );
+    }
+
+    #[test]
+    fn rejects_container_split_rename_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[serde(rename(serialize = "PublicMetadata", deserialize = "MetadataIn"))]
+            struct Metadata {
+                public_name: String,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("split serialize/deserialize rename")
+        );
+    }
+
+    #[test]
+    fn rejects_alias_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Metadata {
+                #[serde(alias = "oldName")]
+                public_name: String,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported serde field attribute `alias`")
+        );
+    }
+
+    #[test]
+    fn rejects_split_direction_skip_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Metadata {
+                #[serde(skip_serializing)]
+                public_name: String,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("split-direction serde skip attributes")
+        );
+    }
+
+    #[test]
     fn rejects_custom_container_default_paths() {
         let input: DeriveInput = syn::parse_quote! {
             #[serde(default = "fallback")]
@@ -1006,17 +1089,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_container_default_for_unmapped_field_types() {
+    fn rejects_container_defaults() {
         let input: DeriveInput = syn::parse_quote! {
             #[serde(default)]
             struct Metadata {
-                nested: PostalAddress,
+                values: Vec<String>,
             }
         };
 
         let err = expand_dto(input).unwrap_err();
 
-        assert!(err.to_string().contains("serde(default) is supported only"));
+        assert!(err.to_string().contains("serde container default"));
     }
 
     #[test]

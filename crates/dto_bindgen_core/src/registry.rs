@@ -102,6 +102,14 @@ impl Registry {
         crate::validation::validate_registry(self, config)
     }
 
+    pub fn validate_for_backend(
+        &self,
+        config: &crate::Config,
+        capabilities: &crate::BackendCapabilities,
+    ) -> Vec<Diagnostic> {
+        crate::validation::validate_registry_for_backend(self, config, capabilities)
+    }
+
     fn allocate_type_id(&mut self) -> TypeId {
         self.next_type_id += 1;
         TypeId::new(self.next_type_id)

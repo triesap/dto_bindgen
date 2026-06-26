@@ -4,9 +4,10 @@
 use std::collections::BTreeMap;
 
 use dto_bindgen_core::{
-    Backend, BackendError, BackendId, Config, DefaultKind, Diagnostic, DiagnosticCode, EnumDef,
-    EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry, StructDef,
-    TypeDef, TypeId, TypeRef, VariantShape,
+    Backend, BackendCapabilities, BackendError, BackendId, Config, DefaultKind, Diagnostic,
+    DiagnosticCode, EnumDef, EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr,
+    Primitive, Registry, StructDef, TypeDef, TypeId, TypeRef, VariantShape,
+    validate_registry_for_backend,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +22,17 @@ impl PythonBackend {
 impl Backend for PythonBackend {
     fn id(&self) -> BackendId {
         BackendId::Python
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::python()
+    }
+
+    fn validate(&self, registry: &Registry, config: &Config) -> Vec<Diagnostic> {
+        if !config.python.enabled {
+            return Vec::new();
+        }
+        validate_registry_for_backend(registry, config, &self.capabilities())
     }
 
     fn render(

@@ -4,9 +4,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use dto_bindgen_core::{
-    Backend, BackendError, BackendId, BytesRepr, Config, Diagnostic, DiagnosticCode, EnumDef,
-    EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry, StructDef,
-    TsEmit, TypeDef, TypeId, TypeRef, VariantDef, VariantShape,
+    Backend, BackendCapabilities, BackendError, BackendId, BytesRepr, Config, Diagnostic,
+    DiagnosticCode, EnumDef, EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr,
+    Primitive, Registry, StructDef, TsEmit, TypeDef, TypeId, TypeRef, VariantDef, VariantShape,
+    validate_registry_for_backend,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -23,11 +24,17 @@ impl Backend for TypeScriptBackend {
         BackendId::TypeScript
     }
 
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::typescript()
+    }
+
     fn validate(&self, registry: &Registry, config: &Config) -> Vec<Diagnostic> {
         if !config.typescript.enabled {
             return Vec::new();
         }
-        validate_type_names(registry)
+        let mut diagnostics = validate_registry_for_backend(registry, config, &self.capabilities());
+        diagnostics.extend(validate_type_names(registry));
+        diagnostics
     }
 
     fn render(
@@ -904,18 +911,26 @@ mod tests {
     }
 
     #[test]
-    fn renders_optional_nullable_fields() {
-        let field = field(
+    fn renders_json_exchange_field_contracts() {
+        let display_name = field(
             "display_name",
             "displayName",
             TypeRef::option(TypeRef::String),
         )
-        .with_presence(FieldPresence::defaulted(
-            dto_bindgen_core::DefaultKind::NoneValue,
-        ));
+        .with_presence(FieldPresence::optional_nullable());
+        let nickname = field("nickname", "nickname", TypeRef::option(TypeRef::String))
+            .with_presence(FieldPresence::optional_nullable_skip_if_none());
+        let tags = field("tags", "tags", TypeRef::vec(TypeRef::String)).with_presence(
+            FieldPresence::defaulted(dto_bindgen_core::DefaultKind::EmptyVec),
+        );
+        let internal_note = field("internal_note", "internalNote", TypeRef::String)
+            .with_presence(FieldPresence::skipped());
         let def = TypeDef::Struct(
             dto_bindgen_core::StructDef::new("ProfilePatch", "ProfilePatch", span())
-                .with_field(field),
+                .with_field(display_name)
+                .with_field(nickname)
+                .with_field(tags)
+                .with_field(internal_note),
         );
         let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "ProfilePatch"), def)]);
 
@@ -925,6 +940,9 @@ mod tests {
         let contents = find_file(&files, "profile_patch.ts").contents();
 
         assert!(contents.contains("displayName?: string | null;"));
+        assert!(contents.contains("nickname?: string | null;"));
+        assert!(contents.contains("tags?: Array<string>;"));
+        assert!(!contents.contains("internalNote"));
     }
 
     #[test]

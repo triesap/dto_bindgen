@@ -17,7 +17,10 @@ mod types;
 mod validation;
 mod writer;
 
-pub use backend::{Backend, BackendError, BackendId, ParseBackendIdError};
+pub use backend::{
+    Backend, BackendCapabilities, BackendError, BackendId, EnumShapeCapabilities,
+    ParseBackendIdError,
+};
 pub use canonical::{CanonicalRegistry, canonical_registry_json_bytes, canonical_registry_sha256};
 pub use config::{
     CONFIG_SCHEMA_VERSION, Config, ConfigError, ExportConfig, ImportExtension, LargeIntPolicy,
@@ -51,7 +54,7 @@ pub use inventory::{
 pub use registry::Registry;
 pub use source::{SourceFile, SourcePosition, SourceSpan};
 pub use types::{BytesRepr, Primitive, TargetOverride, TypeRef};
-pub use validation::validate_registry;
+pub use validation::{validate_registry, validate_registry_for_backend};
 pub use writer::{CheckMismatch, CheckMismatchKind, OutputReport, OutputWriter, OutputWriterError};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

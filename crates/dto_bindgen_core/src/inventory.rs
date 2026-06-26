@@ -1376,7 +1376,6 @@ fn attr_supported(namespace: &str, scope: AttrScope, meta: &Meta) -> bool {
             | "content"
             | "deny_unknown_fields",
         ) => !matches!(meta, Meta::List(_)),
-        ("serde", AttrScope::Container, "default") => matches!(meta, Meta::Path(_)),
         ("serde", AttrScope::Field, "rename" | "skip") => !matches!(meta, Meta::List(_)),
         ("serde", AttrScope::Field, "skip_serializing_if") => {
             meta_value(meta).as_deref() == Some("Option::is_none")
@@ -1614,7 +1613,7 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_container_default_as_supported_inventory_usage() {
+    fn reports_container_default_as_unsupported_inventory_usage() {
         let source = r#"
             #[derive(Dto)]
             #[serde(default)]
@@ -1626,13 +1625,11 @@ mod tests {
         let inventory = scan_rust_source("src/defaults.rs", source).unwrap();
         let item = inventory.items.first().unwrap();
 
+        assert!(item.attrs.iter().any(|attr| {
+            attr.namespace == "serde" && attr.name == "default" && !attr.supported
+        }));
         assert!(
-            item.attrs.iter().any(|attr| {
-                attr.namespace == "serde" && attr.name == "default" && attr.supported
-            })
-        );
-        assert!(
-            !inventory
+            inventory
                 .findings
                 .iter()
                 .any(|finding| { finding.attribute.as_deref() == Some("serde::default") })

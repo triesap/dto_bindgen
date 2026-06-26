@@ -61,6 +61,10 @@ impl std::error::Error for ParseBackendIdError {}
 pub trait Backend {
     fn id(&self) -> BackendId;
 
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::new(self.id())
+    }
+
     fn validate(&self, _registry: &Registry, _config: &Config) -> Vec<Diagnostic> {
         Vec::new()
     }
@@ -70,6 +74,64 @@ pub trait Backend {
         registry: &Registry,
         config: &Config,
     ) -> Result<GeneratedFileSet, BackendError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendCapabilities {
+    pub backend: BackendId,
+    pub enum_shapes: EnumShapeCapabilities,
+}
+
+impl BackendCapabilities {
+    pub fn new(backend: BackendId) -> Self {
+        Self {
+            backend,
+            enum_shapes: EnumShapeCapabilities::default(),
+        }
+    }
+
+    pub fn typescript() -> Self {
+        Self {
+            backend: BackendId::TypeScript,
+            enum_shapes: EnumShapeCapabilities {
+                external_unit: true,
+                internal_struct: true,
+                adjacent_struct: true,
+                adjacent_newtype: true,
+                adjacent_unit: true,
+                ..EnumShapeCapabilities::default()
+            },
+        }
+    }
+
+    pub fn python() -> Self {
+        Self {
+            backend: BackendId::Python,
+            enum_shapes: EnumShapeCapabilities {
+                external_unit: true,
+                internal_struct: true,
+                adjacent_struct: true,
+                ..EnumShapeCapabilities::default()
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EnumShapeCapabilities {
+    pub external_unit: bool,
+    pub external_struct: bool,
+    pub external_newtype: bool,
+    pub external_tuple: bool,
+    pub internal_unit: bool,
+    pub internal_struct: bool,
+    pub internal_newtype: bool,
+    pub internal_tuple: bool,
+    pub adjacent_unit: bool,
+    pub adjacent_struct: bool,
+    pub adjacent_newtype: bool,
+    pub adjacent_tuple: bool,
+    pub untagged: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +190,32 @@ mod tests {
     #[test]
     fn rejects_empty_backend_id() {
         assert!("".parse::<BackendId>().is_err());
+    }
+
+    #[test]
+    fn declares_typescript_json_exchange_capabilities() {
+        let capabilities = BackendCapabilities::typescript();
+
+        assert_eq!(capabilities.backend, BackendId::TypeScript);
+        assert!(capabilities.enum_shapes.external_unit);
+        assert!(capabilities.enum_shapes.internal_struct);
+        assert!(capabilities.enum_shapes.adjacent_struct);
+        assert!(capabilities.enum_shapes.adjacent_newtype);
+        assert!(capabilities.enum_shapes.adjacent_unit);
+        assert!(!capabilities.enum_shapes.untagged);
+    }
+
+    #[test]
+    fn declares_python_backend_capabilities() {
+        let capabilities = BackendCapabilities::python();
+
+        assert_eq!(capabilities.backend, BackendId::Python);
+        assert!(capabilities.enum_shapes.external_unit);
+        assert!(capabilities.enum_shapes.internal_struct);
+        assert!(capabilities.enum_shapes.adjacent_struct);
+        assert!(!capabilities.enum_shapes.adjacent_newtype);
+        assert!(!capabilities.enum_shapes.adjacent_unit);
+        assert!(!capabilities.enum_shapes.untagged);
     }
 
     struct FakeBackend;

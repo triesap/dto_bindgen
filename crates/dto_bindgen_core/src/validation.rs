@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    BytesRepr, Config, DefaultKind, Diagnostic, DiagnosticCode, EnumDef, EnumRepr, FieldDef,
-    FlattenMode, LargeIntPolicy, Primitive, Registry, SerializePresence, StructDef, TypeDef,
-    TypeRef, VariantDef, VariantShape, WireFormat,
+    BackendCapabilities, BytesRepr, Config, DefaultKind, Diagnostic, DiagnosticCode, EnumDef,
+    EnumRepr, EnumShapeCapabilities, FieldDef, FlattenMode, LargeIntPolicy, Primitive, Registry,
+    SerializePresence, StructDef, TypeDef, TypeRef, VariantDef, VariantShape, WireFormat,
 };
 
 pub fn validate_registry(registry: &Registry, config: &Config) -> Vec<Diagnostic> {
@@ -19,6 +19,22 @@ pub fn validate_registry(registry: &Registry, config: &Config) -> Vec<Diagnostic
     diagnostics
 }
 
+pub fn validate_registry_for_backend(
+    registry: &Registry,
+    _config: &Config,
+    capabilities: &BackendCapabilities,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for type_def in registry.types_by_id.values() {
+        if let TypeDef::Enum(def) = type_def {
+            validate_enum_for_backend(def, capabilities, &mut diagnostics);
+        }
+    }
+
+    diagnostics
+}
+
 fn validate_struct(def: &StructDef, config: &Config, diagnostics: &mut Vec<Diagnostic>) {
     validate_fields(&def.export_name, None, &def.fields, config, diagnostics);
 }
@@ -26,67 +42,72 @@ fn validate_struct(def: &StructDef, config: &Config, diagnostics: &mut Vec<Diagn
 fn validate_enum(def: &EnumDef, config: &Config, diagnostics: &mut Vec<Diagnostic>) {
     validate_variant_discriminants(def, diagnostics);
 
-    match &def.repr {
-        EnumRepr::Untagged => diagnostics.push(
-            Diagnostic::error(DiagnosticCode::new(304), "unsupported untagged enum")
-                .with_help("`untagged` is not supported in the MVP.")
-                .with_type(def.export_name.clone())
-                .with_source(def.source.clone()),
-        ),
-        EnumRepr::External => validate_external_enum(def, config, diagnostics),
-        EnumRepr::Internal { .. } | EnumRepr::Adjacent { .. } => {
-            validate_tagged_enum(def, config, diagnostics);
-        }
-    }
-}
-
-fn validate_external_enum(def: &EnumDef, config: &Config, diagnostics: &mut Vec<Diagnostic>) {
     for variant in &def.variants {
-        match &variant.shape {
-            VariantShape::Unit => {}
-            VariantShape::Struct(fields) => {
-                diagnostics.push(unsupported_variant_shape(
-                    def,
-                    variant,
-                    "externally tagged data enum",
-                ));
-                validate_fields(
-                    &def.export_name,
-                    Some(variant.rust_name.as_str()),
-                    fields,
-                    config,
-                    diagnostics,
-                );
-            }
-            VariantShape::Newtype(_) | VariantShape::Tuple(_) => {
-                diagnostics.push(unsupported_variant_shape(
-                    def,
-                    variant,
-                    "tuple/newtype variant",
-                ));
-            }
-        }
-    }
-}
-
-fn validate_tagged_enum(def: &EnumDef, config: &Config, diagnostics: &mut Vec<Diagnostic>) {
-    for variant in &def.variants {
-        match &variant.shape {
-            VariantShape::Struct(fields) => validate_fields(
+        if let VariantShape::Struct(fields) = &variant.shape {
+            validate_fields(
                 &def.export_name,
                 Some(variant.rust_name.as_str()),
                 fields,
                 config,
                 diagnostics,
-            ),
-            VariantShape::Unit | VariantShape::Newtype(_) | VariantShape::Tuple(_) => {
-                diagnostics.push(unsupported_variant_shape(
-                    def,
-                    variant,
-                    "tagged enum non-struct variant",
-                ));
-            }
+            );
         }
+    }
+}
+
+fn validate_enum_for_backend(
+    def: &EnumDef,
+    capabilities: &BackendCapabilities,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for variant in &def.variants {
+        if !enum_shape_supported(&def.repr, &variant.shape, capabilities.enum_shapes) {
+            diagnostics.push(unsupported_variant_shape(def, variant, capabilities));
+        }
+    }
+}
+
+fn enum_shape_supported(
+    repr: &EnumRepr,
+    shape: &VariantShape,
+    capabilities: EnumShapeCapabilities,
+) -> bool {
+    match (repr, shape) {
+        (EnumRepr::Untagged, _) => capabilities.untagged,
+        (EnumRepr::External, VariantShape::Unit) => capabilities.external_unit,
+        (EnumRepr::External, VariantShape::Struct(_)) => capabilities.external_struct,
+        (EnumRepr::External, VariantShape::Newtype(_)) => capabilities.external_newtype,
+        (EnumRepr::External, VariantShape::Tuple(_)) => capabilities.external_tuple,
+        (EnumRepr::Internal { .. }, VariantShape::Unit) => capabilities.internal_unit,
+        (EnumRepr::Internal { .. }, VariantShape::Struct(_)) => capabilities.internal_struct,
+        (EnumRepr::Internal { .. }, VariantShape::Newtype(_)) => capabilities.internal_newtype,
+        (EnumRepr::Internal { .. }, VariantShape::Tuple(_)) => capabilities.internal_tuple,
+        (EnumRepr::Adjacent { .. }, VariantShape::Unit) => capabilities.adjacent_unit,
+        (EnumRepr::Adjacent { .. }, VariantShape::Struct(_)) => capabilities.adjacent_struct,
+        (EnumRepr::Adjacent { .. }, VariantShape::Newtype(_)) => capabilities.adjacent_newtype,
+        (EnumRepr::Adjacent { .. }, VariantShape::Tuple(_)) => capabilities.adjacent_tuple,
+    }
+}
+
+fn enum_shape_name(repr: &EnumRepr, shape: &VariantShape) -> &'static str {
+    match (repr, shape) {
+        (EnumRepr::Untagged, _) => "untagged enum",
+        (EnumRepr::External, VariantShape::Unit) => "externally tagged unit variant",
+        (EnumRepr::External, VariantShape::Struct(_)) => "externally tagged struct variant",
+        (EnumRepr::External, VariantShape::Newtype(_)) => "externally tagged newtype variant",
+        (EnumRepr::External, VariantShape::Tuple(_)) => "externally tagged tuple variant",
+        (EnumRepr::Internal { .. }, VariantShape::Unit) => "internally tagged unit variant",
+        (EnumRepr::Internal { .. }, VariantShape::Struct(_)) => "internally tagged struct variant",
+        (EnumRepr::Internal { .. }, VariantShape::Newtype(_)) => {
+            "internally tagged newtype variant"
+        }
+        (EnumRepr::Internal { .. }, VariantShape::Tuple(_)) => "internally tagged tuple variant",
+        (EnumRepr::Adjacent { .. }, VariantShape::Unit) => "adjacently tagged unit variant",
+        (EnumRepr::Adjacent { .. }, VariantShape::Struct(_)) => "adjacently tagged struct variant",
+        (EnumRepr::Adjacent { .. }, VariantShape::Newtype(_)) => {
+            "adjacently tagged newtype variant"
+        }
+        (EnumRepr::Adjacent { .. }, VariantShape::Tuple(_)) => "adjacently tagged tuple variant",
     }
 }
 
@@ -336,14 +357,23 @@ fn validate_primitive(
     }
 }
 
-fn unsupported_variant_shape(def: &EnumDef, variant: &VariantDef, shape: &str) -> Diagnostic {
+fn unsupported_variant_shape(
+    def: &EnumDef,
+    variant: &VariantDef,
+    capabilities: &BackendCapabilities,
+) -> Diagnostic {
     Diagnostic::error(
         DiagnosticCode::new(304),
-        format!("unsupported enum shape `{shape}`"),
+        format!(
+            "{} does not support {}",
+            capabilities.backend,
+            enum_shape_name(&def.repr, &variant.shape)
+        ),
     )
-    .with_help("MVP enum support is fieldless enums plus tagged enums with struct variants.")
+    .with_help("Use a backend-supported enum representation or disable that backend.")
     .with_type(def.export_name.clone())
     .with_variant(variant.rust_name.clone())
+    .with_backend(capabilities.backend.clone())
     .with_source(variant.source.clone())
 }
 
@@ -568,25 +598,38 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_enum_shapes() {
+    fn defers_enum_shape_limits_to_backend_validation() {
         let registry = registry_with_type(TypeDef::Enum(
-            EnumDef::new("Value", "Value", EnumRepr::Untagged, span(1)).with_variant(
-                VariantDef::new(
-                    "StringValue",
-                    "stringValue",
-                    VariantShape::Newtype(TypeRef::String),
-                    span(2),
-                ),
-            ),
+            EnumDef::new(
+                "Value",
+                "Value",
+                EnumRepr::Adjacent {
+                    tag: "type".to_owned(),
+                    content: "payload".to_owned(),
+                },
+                span(1),
+            )
+            .with_variant(VariantDef::new(
+                "StringValue",
+                "stringValue",
+                VariantShape::Newtype(TypeRef::String),
+                span(2),
+            )),
         ));
 
-        let codes = registry
-            .validate(&Config::default())
-            .into_iter()
-            .map(|diagnostic| diagnostic.code)
-            .collect::<Vec<_>>();
+        let config = Config::default();
 
-        assert!(codes.contains(&DiagnosticCode::new(304)));
+        assert!(registry.validate(&config).is_empty());
+        assert!(
+            registry
+                .validate_for_backend(&config, &BackendCapabilities::typescript())
+                .is_empty()
+        );
+
+        let diagnostics = registry.validate_for_backend(&config, &BackendCapabilities::python());
+
+        assert_eq!(diagnostics[0].code, DiagnosticCode::new(304));
+        assert_eq!(diagnostics[0].backend, Some(crate::BackendId::Python));
     }
 
     #[test]
