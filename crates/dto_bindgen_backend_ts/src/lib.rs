@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dto_bindgen_core::{
     Backend, BackendError, BackendId, BytesRepr, Config, Diagnostic, DiagnosticCode, EnumDef,
-    EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry,
-    SerializePresence, StructDef, TsEmit, TypeDef, TypeId, TypeRef, VariantDef, VariantShape,
+    EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry, StructDef,
+    TsEmit, TypeDef, TypeId, TypeRef, VariantDef, VariantShape,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -241,9 +241,10 @@ fn render_object_field(
     indent: usize,
     output: &mut String,
 ) -> Result<(), Diagnostic> {
+    let contract = field.contract();
     push_indent(output, indent);
     push_object_key(output, &field.wire.serialize_name);
-    if !field.presence.required_on_deserialize {
+    if !contract.required {
         output.push('?');
     }
     output.push_str(": ");
@@ -403,7 +404,7 @@ fn collect_type_ref_named_refs(ty: &TypeRef, imports: &mut BTreeSet<TypeId>) {
 }
 
 fn field_is_emitted(field: &FieldDef) -> bool {
-    !matches!(field.presence.serialize_presence, SerializePresence::Never)
+    field.contract().serialized
 }
 
 fn unsupported_variant(def: &EnumDef, variant: &VariantDef) -> Diagnostic {

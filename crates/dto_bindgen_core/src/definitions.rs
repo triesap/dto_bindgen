@@ -1,6 +1,6 @@
 use crate::{
-    DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, IntRepr, SourceSpan,
-    TargetFieldNames, TypeRef, WireFieldNames,
+    DefaultKind, DocString, FieldContract, FieldPresence, FieldWireContract, FlattenMode,
+    IdentName, IntRepr, SourceSpan, TargetFieldNames, TypeRef, WireFieldNames,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -73,6 +73,14 @@ impl FieldDef {
     pub const fn with_int_repr(mut self, int_repr: IntRepr) -> Self {
         self.int_repr = Some(int_repr);
         self
+    }
+
+    pub fn wire_contract(&self) -> FieldWireContract {
+        self.presence.wire_contract()
+    }
+
+    pub fn contract(&self) -> FieldContract {
+        self.presence.contract()
     }
 }
 

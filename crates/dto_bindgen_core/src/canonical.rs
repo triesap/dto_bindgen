@@ -5,9 +5,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     BackendId, BytesRepr, CONFIG_SCHEMA_VERSION, ContainerAttrs, DefaultKind, Diagnostic, EnumDef,
-    EnumRepr, FieldDef, FieldPresence, FlattenMode, GenericParam, IntRepr, Primitive, Registry,
-    RustTypeId, SerializePresence, SourcePosition, SourceSpan, StructDef, TypeDef, TypeId, TypeRef,
-    VariantDef, VariantShape,
+    EnumRepr, FieldContract, FieldDef, FieldWireContract, FlattenMode, GenericParam, IntRepr,
+    Primitive, Registry, RustTypeId, SerializePresence, SourcePosition, SourceSpan, StructDef,
+    TypeDef, TypeId, TypeRef, VariantDef, VariantShape,
 };
 
 pub fn canonical_registry_json_bytes(registry: &Registry) -> Result<Vec<u8>, serde_json::Error> {
@@ -268,7 +268,8 @@ pub struct CanonicalField {
     pub wire: CanonicalWireFieldNames,
     pub target: CanonicalTargetFieldNames,
     pub ty: CanonicalTypeRef,
-    pub presence: CanonicalFieldPresence,
+    pub wire_contract: CanonicalFieldWireContract,
+    pub contract: CanonicalFieldContract,
     pub int_repr: Option<CanonicalIntRepr>,
     pub flatten: CanonicalFlattenMode,
     pub docs: Option<String>,
@@ -292,7 +293,10 @@ impl CanonicalField {
                 python: field.target.python.clone(),
             },
             ty: CanonicalTypeRef::from_type_ref(&field.ty, type_id_to_rust_id),
-            presence: CanonicalFieldPresence::from_field_presence(&field.presence),
+            wire_contract: CanonicalFieldWireContract::from_field_wire_contract(
+                &field.wire_contract(),
+            ),
+            contract: CanonicalFieldContract::from_field_contract(&field.contract()),
             int_repr: field.int_repr.map(CanonicalIntRepr::from_int_repr),
             flatten: CanonicalFlattenMode::from_flatten_mode(field.flatten),
             docs: field.docs.as_ref().map(|docs| docs.as_str().to_owned()),
@@ -315,25 +319,49 @@ pub struct CanonicalTargetFieldNames {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub struct CanonicalFieldPresence {
+pub struct CanonicalFieldWireContract {
     pub nullable: bool,
     pub required_on_deserialize: bool,
     pub default: Option<CanonicalDefaultKind>,
     pub serialize_presence: CanonicalSerializePresence,
 }
 
-impl CanonicalFieldPresence {
-    fn from_field_presence(presence: &FieldPresence) -> Self {
+impl CanonicalFieldWireContract {
+    fn from_field_wire_contract(wire: &FieldWireContract) -> Self {
         Self {
-            nullable: presence.nullable,
-            required_on_deserialize: presence.required_on_deserialize,
-            default: presence
+            nullable: wire.nullable,
+            required_on_deserialize: wire.required_on_deserialize,
+            default: wire
                 .default
                 .as_ref()
                 .map(CanonicalDefaultKind::from_default_kind),
             serialize_presence: CanonicalSerializePresence::from_serialize_presence(
-                presence.serialize_presence,
+                wire.serialize_presence,
             ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct CanonicalFieldContract {
+    pub serialized: bool,
+    pub required: bool,
+    pub nullable: bool,
+    pub default: Option<CanonicalDefaultKind>,
+    pub omit_when_none: bool,
+}
+
+impl CanonicalFieldContract {
+    fn from_field_contract(contract: &FieldContract) -> Self {
+        Self {
+            serialized: contract.serialized,
+            required: contract.required,
+            nullable: contract.nullable,
+            default: contract
+                .default
+                .as_ref()
+                .map(CanonicalDefaultKind::from_default_kind),
+            omit_when_none: contract.omit_when_none,
         }
     }
 }

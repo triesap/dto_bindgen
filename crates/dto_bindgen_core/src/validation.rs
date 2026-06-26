@@ -124,7 +124,10 @@ fn validate_fields(
     let mut seen = BTreeMap::<String, String>::new();
 
     for field in fields {
-        if !field.presence.is_serialized() {
+        let contract = field.contract();
+        let wire_contract = field.wire_contract();
+
+        if !contract.serialized {
             continue;
         }
 
@@ -167,7 +170,7 @@ fn validate_fields(
             );
         }
 
-        if matches!(field.presence.default, Some(DefaultKind::CustomPath(_))) {
+        if matches!(wire_contract.default, Some(DefaultKind::CustomPath(_))) {
             diagnostics.push(
                 field_diagnostic(
                     DiagnosticCode::new(306),
@@ -180,7 +183,7 @@ fn validate_fields(
             );
         }
 
-        if field.presence.serialize_presence == SerializePresence::SkipIfNone
+        if wire_contract.serialize_presence == SerializePresence::SkipIfNone
             && !matches!(field.ty, TypeRef::Option(_))
         {
             diagnostics.push(
@@ -195,7 +198,7 @@ fn validate_fields(
             );
         }
 
-        if field.presence.serialize_presence == SerializePresence::SkipIfDefault {
+        if wire_contract.serialize_presence == SerializePresence::SkipIfDefault {
             diagnostics.push(
                 field_diagnostic(
                     DiagnosticCode::new(308),

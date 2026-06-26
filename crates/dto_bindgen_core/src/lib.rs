@@ -32,8 +32,8 @@ pub use descriptor::{DescribeCtx, Dto, RootDescriptor, build_registry};
 pub use diagnostics::{Diagnostic, DiagnosticCode, ParseDiagnosticCodeError, Severity};
 pub use export::{ExportError, ExportOptions, ExportReport, validate_roots};
 pub use fields::{
-    DefaultKind, DocString, FieldPresence, FlattenMode, IdentName, IntRepr, SerializePresence,
-    TargetFieldNames, WireFieldNames,
+    DefaultKind, DocString, FieldContract, FieldPresence, FieldWireContract, FlattenMode,
+    IdentName, IntRepr, SerializePresence, TargetFieldNames, WireFieldNames,
 };
 pub use generated::{
     GeneratedFile, GeneratedFileSet, GeneratedFileSetError, GeneratedManifest,

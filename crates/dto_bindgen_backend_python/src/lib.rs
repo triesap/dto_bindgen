@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use dto_bindgen_core::{
     Backend, BackendError, BackendId, Config, DefaultKind, Diagnostic, DiagnosticCode, EnumDef,
-    EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry,
-    SerializePresence, StructDef, TypeDef, TypeId, TypeRef, VariantShape,
+    EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr, Primitive, Registry, StructDef,
+    TypeDef, TypeId, TypeRef, VariantShape,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -255,7 +255,7 @@ fn render_dict_field_assignments(
 ) -> Result<(), Diagnostic> {
     for field in fields {
         let access = format!("{access_prefix}.{}", field.target.python);
-        if field.presence.serialize_presence == SerializePresence::SkipIfNone {
+        if field.contract().omit_when_none {
             output.push_str(indent);
             output.push_str("if ");
             output.push_str(&access);
@@ -447,8 +447,9 @@ fn field_call(field: &FieldDef) -> String {
         "metadata={{\"wire_name\": \"{}\"}}",
         escape_py_string(&field.wire.serialize_name)
     );
+    let contract = field.contract();
 
-    match field.presence.default.as_ref() {
+    match contract.default.as_ref() {
         None => format!("field({metadata})"),
         Some(DefaultKind::NoneValue) => format!("field(default=None, {metadata})"),
         Some(DefaultKind::EmptyString) => format!("field(default=\"\", {metadata})"),
@@ -462,11 +463,12 @@ fn field_call(field: &FieldDef) -> String {
 
 fn field_access_expr(field: &FieldDef, source: &str) -> String {
     let wire_name = escape_py_string(&field.wire.deserialize_name);
-    if field.presence.required_on_deserialize {
+    let wire_contract = field.wire_contract();
+    if wire_contract.required_on_deserialize {
         return format!("{source}[\"{wire_name}\"]");
     }
 
-    match field.presence.default.as_ref() {
+    match wire_contract.default.as_ref() {
         None | Some(DefaultKind::NoneValue) => format!("{source}.get(\"{wire_name}\")"),
         Some(DefaultKind::EmptyString) => format!("{source}.get(\"{wire_name}\", \"\")"),
         Some(DefaultKind::EmptyVec) => format!("{source}.get(\"{wire_name}\", [])"),
@@ -758,7 +760,7 @@ fn collect_type_ref_named_refs(
 }
 
 fn field_is_emitted(field: &FieldDef) -> bool {
-    !matches!(field.presence.serialize_presence, SerializePresence::Never)
+    field.contract().serialized
 }
 
 fn non_string_key(field: &FieldDef) -> Diagnostic {
