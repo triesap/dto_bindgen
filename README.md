@@ -1,6 +1,6 @@
 # dto_bindgen
 
-`dto_bindgen` derives a neutral DTO description from Rust source and renders passive TypeScript and Python DTO surfaces from explicit export roots.
+`dto_bindgen` derives a neutral DTO description from Rust source and renders passive TypeScript and Python DTO surfaces from explicit export roots or generated source-manifest roots.
 
 The MVP targets:
 
@@ -10,12 +10,13 @@ The MVP targets:
 
 ## Quickstart
 
-Add `#[derive(dto_bindgen::Dto)]` to DTO types and keep Serde metadata as the wire-format source of truth.
+Add `#[derive(dto_bindgen::Dto)]` to DTO types, mark package roots with `#[dto(export)]`, and keep Serde metadata as the wire-format source of truth.
 
 ```rust,no_run
 use dto_bindgen::Dto;
 
 #[derive(Dto)]
+#[dto(export)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UserProfile {
     user_id: String,
@@ -23,21 +24,44 @@ struct UserProfile {
 }
 
 #[derive(Dto)]
+#[dto(export)]
 #[serde(tag = "type", content = "payload", rename_all = "camelCase", rename_all_fields = "camelCase")]
 enum SdkEvent {
     UserCreated { user: UserProfile, event_id: String },
 }
+```
+
+Generate the root module from an explicit source manifest:
+
+```toml
+[root_discovery]
+mode = "source_manifest"
+source_files = ["src/lib.rs"]
+root_module_file = "src/generated/dto_roots.rs"
+```
+
+```sh
+dto_bindgen export --config dto_bindgen.toml
+dto_bindgen check --config dto_bindgen.toml
+```
+
+Then include the generated module from a test, xtask, or export binary and call the normal compiled export path:
+
+```rust,ignore
+mod generated {
+    include!("generated/dto_roots.rs");
+}
 
 fn main() -> Result<(), dto_bindgen::export::ExportError> {
-    dto_bindgen::export_types!(
-        config = "dto_bindgen.toml",
-        roots = [UserProfile, SdkEvent],
+    dto_bindgen::export::export_with_roots(
+        dto_bindgen::export::ExportOptions::new("dto_bindgen.toml"),
+        generated::dto_bindgen_roots(),
     )?;
     Ok(())
 }
 ```
 
-The export call is intentionally explicit. The CLI does not scan crates for roots in the MVP.
+Compiled exports remain explicit because Rust trait descriptors must be type checked by Rust. The CLI scans only configured source files and produces/checks the generated root module.
 
 ## Configuration
 
@@ -78,53 +102,65 @@ emit_from_dict = true
 emit_to_dict = true
 emit_py_typed = true
 unknown_fields = "ignore"
+
+[root_discovery]
+mode = "source_manifest"
+source_files = ["src/lib.rs"]
+root_module_file = "src/generated/dto_roots.rs"
 ```
 
-Generated paths must stay under `[export].out_dir`. The manifest is written inside that output root.
+Backend generated paths must stay under `[export].out_dir`. The manifest is written inside that output root.
 
 ## CLI
 
-The CLI is a helper for config, diagnostics plumbing, and manifest cleanup. It does not discover DTO roots by itself.
+The CLI is a helper for config, source-manifest root generation/checking, inventory reports, diagnostics plumbing, and manifest cleanup.
 
 ```sh
 cargo run -p dto_bindgen_cli -- --help
 cargo run -p dto_bindgen_cli -- config --config dto_bindgen.toml
+cargo run -p dto_bindgen_cli -- export --config dto_bindgen.toml
+cargo run -p dto_bindgen_cli -- check --config dto_bindgen.toml
 cargo run -p dto_bindgen_cli -- clean --config dto_bindgen.toml
 cargo run -p dto_bindgen_cli -- inventory --manifest dto_bindgen.inventory.toml \
   --json-out docs/implementation/reports/sdk_inventory_pilot.json \
   --markdown-out docs/implementation/reports/sdk_inventory_pilot.md
 ```
 
-Use a test, xtask, or small export binary that calls `dto_bindgen::export_types!` for export and check workflows.
-Inventory reports use explicit SDK source inputs from a manifest; the CLI does not scan every Rust root automatically.
+Use a test, xtask, or small export binary that calls `dto_bindgen::export::export_with_roots` with the generated root module for backend rendering. Inventory and root discovery use explicit source inputs from manifests; the CLI does not scan every Rust root automatically.
 
 ## Supported MVP Shape
 
 Rust/Serde support:
 
 - named structs
+- one-field `#[serde(transparent)]` structs
 - fieldless external enums
+- fieldless string enums with explicit `#[dto(rename = "...")]` variant names
 - internally tagged enum struct variants
-- adjacently tagged enum struct variants
+- adjacently tagged enum unit, struct, and one-field newtype variants
 - `rename`, `rename_all`, `rename_all_fields`, and `deny_unknown_fields`
 - field `rename`, `skip`, `skip_serializing_if = "Option::is_none"` for `Option<T>`, and built-in `default` for `Option<T>`, `String`, `bool`, numeric types, `Vec<T>`, and string-keyed maps
 - primitives, `Option<T>`, `Vec<T>`, arrays, string-keyed maps, and named DTO references
 
 DTO-specific support:
 
+- `#[dto(export)]`
 - `#[dto(skip)]`
-- `#[dto(int_repr = "json_string" | "json_number")]`
+- `#[dto(as = "string")]`
+- `#[dto(as = "string_enum")]`
+- `#[dto(rename = "...")]` on string-enum variants
+- `#[dto(int = "json_string" | "json_number")]`
 
-Unsupported behavior fails closed with diagnostics. MVP non-goals include whole-crate discovery, `flatten`, `untagged`, container `default`, custom `serde(default = "...")` functions, custom `skip_serializing_if` predicates, arbitrary custom serializers, Pydantic, JSON Schema/OpenAPI, Swift/Kotlin backends, and UniFFI integration.
+Unsupported behavior fails closed with diagnostics. MVP non-goals include implicit whole-crate discovery, `flatten`, `untagged`, container `default`, custom `serde(default = "...")` functions, custom `skip_serializing_if` predicates, arbitrary custom serializers, Pydantic, JSON Schema/OpenAPI, Swift/Kotlin backends, and UniFFI integration.
 
 ## Numeric Policy
 
-Large Rust integers do not silently map to JSON-facing target types. With the default policy, fields such as `u64`, `i128`, and `u128` require an explicit `#[dto(int_repr = "...")]` override.
+Large Rust integers do not silently map to JSON-facing target types. With the default policy, fields such as `u64`, `i128`, and `u128` require an explicit `#[dto(int = "...")]` override.
 
 ```rust
 #[derive(dto_bindgen::Dto)]
 struct LedgerEntry {
-    #[dto(int_repr = "json_string")]
+    #[dto(int = "json_string")]
     amount_minor_units: u128,
 }
 ```
