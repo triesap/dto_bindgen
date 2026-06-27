@@ -114,16 +114,16 @@ fn expand_enum(
                         .rename
                         .unwrap_or_else(|| container_attrs.rename_variant_field(&rust_name));
                     let ty = field.ty;
-                    let field_expr = field_def_tokens(
-                        &field_var,
-                        &rust_name,
-                        &wire_name,
-                        &ty,
-                        field_attrs.int_repr,
-                        field_attrs.default,
-                        field_attrs.skip_serializing_if,
-                        field_source,
-                    )?;
+                    let field_expr = field_def_tokens(FieldDefTokens {
+                        field_var: &field_var,
+                        rust_name: &rust_name,
+                        wire_name: &wire_name,
+                        ty: &ty,
+                        int_repr: field_attrs.int_repr,
+                        serde_default: field_attrs.default,
+                        skip_serializing_if: field_attrs.skip_serializing_if,
+                        source: field_source,
+                    })?;
 
                     field_tokens.push(quote! {
                         let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
@@ -145,7 +145,7 @@ fn expand_enum(
                 });
             }
             Fields::Unnamed(fields) => {
-                if !matches!(container_attrs.content, Some(_)) || fields.unnamed.len() != 1 {
+                if container_attrs.content.is_none() || fields.unnamed.len() != 1 {
                     return Err(syn::Error::new_spanned(
                         fields,
                         "`Dto` derive supports only one-field adjacent tagged tuple variants",
@@ -347,16 +347,16 @@ fn expand_struct(
         let ty = field.ty;
         let dto_as = field_attrs.dto_as;
 
-        let field_expr = field_def_tokens(
-            &field_var,
-            &rust_name,
-            &wire_name,
-            &ty,
-            field_attrs.int_repr,
-            field_attrs.default || container_attrs.default,
-            field_attrs.skip_serializing_if,
-            field_source,
-        )?;
+        let field_expr = field_def_tokens(FieldDefTokens {
+            field_var: &field_var,
+            rust_name: &rust_name,
+            wire_name: &wire_name,
+            ty: &ty,
+            int_repr: field_attrs.int_repr,
+            serde_default: field_attrs.default || container_attrs.default,
+            skip_serializing_if: field_attrs.skip_serializing_if,
+            source: field_source,
+        })?;
         let field_ty_expr = type_ref_expr_tokens(&ty, dto_as)?;
         field_tokens.push(quote! {
             let #field_var = #field_ty_expr;
@@ -464,16 +464,28 @@ fn expand_transparent_struct(
     })
 }
 
-fn field_def_tokens(
-    field_var: &Ident,
-    rust_name: &str,
-    wire_name: &str,
-    ty: &Type,
+struct FieldDefTokens<'a> {
+    field_var: &'a Ident,
+    rust_name: &'a str,
+    wire_name: &'a str,
+    ty: &'a Type,
     int_repr: Option<IntReprAttr>,
     serde_default: bool,
     skip_serializing_if: Option<String>,
     source: proc_macro2::TokenStream,
-) -> syn::Result<proc_macro2::TokenStream> {
+}
+
+fn field_def_tokens(args: FieldDefTokens<'_>) -> syn::Result<proc_macro2::TokenStream> {
+    let FieldDefTokens {
+        field_var,
+        rust_name,
+        wire_name,
+        ty,
+        int_repr,
+        serde_default,
+        skip_serializing_if,
+        source,
+    } = args;
     let int_repr_tokens = int_repr
         .map(|value| {
             let value = value.tokens();
@@ -593,11 +605,7 @@ impl FieldAttrs {
                         }
                         parsed.dto_as = Some(dto_as);
                         Ok(())
-                    } else if meta.path.is_ident("int") {
-                        parsed.int_repr =
-                            Some(IntReprAttr::parse(&parse_string_value(&meta)?, &meta)?);
-                        Ok(())
-                    } else if meta.path.is_ident("int_repr") {
+                    } else if meta.path.is_ident("int") || meta.path.is_ident("int_repr") {
                         parsed.int_repr =
                             Some(IntReprAttr::parse(&parse_string_value(&meta)?, &meta)?);
                         Ok(())
