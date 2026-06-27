@@ -1114,44 +1114,46 @@ impl InventoryScanner {
     fn collect_attrs(&mut self, attrs: &[Attribute], scope: AttrScope) -> Vec<InventoryAttribute> {
         let mut output = Vec::new();
         for attr in attrs {
-            let Some(namespace) = attr_namespace(attr) else {
-                continue;
-            };
-            let location = self.location(attr);
+            for meta in attr_inventory_metas(attr) {
+                let Some(namespace) = meta_namespace(&meta) else {
+                    continue;
+                };
+                let location = self.location(attr);
 
-            match meta_children(&attr.meta) {
-                Ok(children) if !children.is_empty() => {
-                    for meta in children {
-                        let name = meta_path(&meta);
-                        let value = meta_value(&meta);
-                        let supported = attr_supported(namespace, scope, &meta);
+                match meta_children(&meta) {
+                    Ok(children) if !children.is_empty() => {
+                        for child in children {
+                            let name = meta_path(&child);
+                            let value = meta_value(&child);
+                            let supported = attr_supported(namespace, scope, &child);
+                            let inventory_attr = InventoryAttribute {
+                                namespace: namespace.to_owned(),
+                                name,
+                                value,
+                                supported,
+                                location: location.clone(),
+                            };
+                            self.push_attr_finding(scope, &inventory_attr);
+                            output.push(inventory_attr);
+                        }
+                    }
+                    _ => {
+                        let name = meta
+                            .path()
+                            .segments
+                            .last()
+                            .map(|segment| segment.ident.to_string())
+                            .unwrap_or_else(|| namespace.to_owned());
                         let inventory_attr = InventoryAttribute {
                             namespace: namespace.to_owned(),
                             name,
-                            value,
-                            supported,
-                            location: location.clone(),
+                            value: None,
+                            supported: false,
+                            location,
                         };
                         self.push_attr_finding(scope, &inventory_attr);
                         output.push(inventory_attr);
                     }
-                }
-                _ => {
-                    let name = attr
-                        .path()
-                        .segments
-                        .last()
-                        .map(|segment| segment.ident.to_string())
-                        .unwrap_or_else(|| namespace.to_owned());
-                    let inventory_attr = InventoryAttribute {
-                        namespace: namespace.to_owned(),
-                        name,
-                        value: None,
-                        supported: false,
-                        location,
-                    };
-                    self.push_attr_finding(scope, &inventory_attr);
-                    output.push(inventory_attr);
                 }
             }
         }
@@ -1300,9 +1302,13 @@ fn has_inventory_derive(derives: &[String]) -> bool {
 }
 
 fn attr_namespace(attr: &Attribute) -> Option<&'static str> {
-    if attr.path().is_ident("serde") {
+    meta_namespace(&attr.meta)
+}
+
+fn meta_namespace(meta: &Meta) -> Option<&'static str> {
+    if meta.path().is_ident("serde") {
         Some("serde")
-    } else if attr.path().is_ident("dto") {
+    } else if meta.path().is_ident("dto") {
         Some("dto")
     } else {
         None
@@ -1312,18 +1318,40 @@ fn attr_namespace(attr: &Attribute) -> Option<&'static str> {
 fn derive_names(attrs: &[Attribute]) -> Vec<String> {
     let mut names = Vec::new();
     for attr in attrs {
-        if !attr.path().is_ident("derive") {
-            continue;
-        }
-        if let Ok(children) = meta_children(&attr.meta) {
-            for child in children {
-                names.push(meta_path(&child));
+        for meta in attr_inventory_metas(attr) {
+            if !meta.path().is_ident("derive") {
+                continue;
+            }
+            if let Ok(children) = meta_children(&meta) {
+                for child in children {
+                    names.push(meta_path(&child));
+                }
             }
         }
     }
     names.sort();
     names.dedup();
     names
+}
+
+fn attr_inventory_metas(attr: &Attribute) -> Vec<Meta> {
+    if attr_namespace(attr).is_some() || attr.path().is_ident("derive") {
+        return vec![attr.meta.clone()];
+    }
+
+    if !attr.path().is_ident("cfg_attr") {
+        return Vec::new();
+    }
+
+    let Ok(children) = meta_children(&attr.meta) else {
+        return Vec::new();
+    };
+
+    children
+        .into_iter()
+        .skip(1)
+        .filter(|meta| meta_namespace(meta).is_some() || meta.path().is_ident("derive"))
+        .collect()
 }
 
 fn generic_names(generics: &syn::Generics) -> Vec<String> {
@@ -1761,6 +1789,41 @@ mod tests {
                 .findings
                 .iter()
                 .any(|finding| { finding.attribute.as_deref() == Some("dto::export") })
+        );
+    }
+
+    #[test]
+    fn scans_cfg_attr_dto_derives_and_export_roots() {
+        let source = r#"
+            #[cfg_attr(feature = "dto-bindgen", derive(dto_bindgen::Dto))]
+            #[cfg_attr(feature = "dto-bindgen", dto(export))]
+            struct UserProfile {
+                id: String,
+            }
+
+            #[cfg_attr(feature = "dto-bindgen", derive(dto_bindgen::Dto))]
+            struct InternalState {
+                note: String,
+            }
+        "#;
+
+        let inventory = scan_rust_source("src/sdk.rs", source).unwrap();
+        let exported = inventory
+            .exported_roots()
+            .map(|item| item.rust_name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(exported, ["UserProfile"]);
+        assert_eq!(inventory.items.len(), 2);
+        assert!(
+            inventory
+                .items
+                .iter()
+                .find(|item| item.rust_name == "UserProfile")
+                .unwrap()
+                .derives
+                .iter()
+                .any(|name| name.rsplit("::").next() == Some("Dto"))
         );
     }
 
