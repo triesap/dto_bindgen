@@ -16,6 +16,7 @@ pub struct Config {
     pub numeric: NumericConfig,
     pub typescript: TypeScriptConfig,
     pub python: PythonConfig,
+    pub root_discovery: RootDiscoveryConfig,
     #[serde(rename = "package")]
     pub packages: Vec<PackageConfig>,
 }
@@ -28,6 +29,7 @@ impl Default for Config {
             numeric: NumericConfig::default(),
             typescript: TypeScriptConfig::default(),
             python: PythonConfig::default(),
+            root_discovery: RootDiscoveryConfig::default(),
             packages: Vec::new(),
         }
     }
@@ -60,6 +62,7 @@ impl Config {
         validate_external_imports(&self.typescript.external_types)?;
         validate_packages(&self.packages)?;
         validate_package_graph(&self.packages)?;
+        validate_root_discovery(&self.root_discovery)?;
 
         Ok(())
     }
@@ -241,6 +244,31 @@ pub enum UnknownFieldsPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RootDiscoveryConfig {
+    pub mode: RootDiscoveryMode,
+    pub source_files: Vec<String>,
+    pub root_module_file: String,
+}
+
+impl Default for RootDiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            mode: RootDiscoveryMode::Explicit,
+            source_files: Vec::new(),
+            root_module_file: "generated/dto_bindgen_roots.rs".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootDiscoveryMode {
+    Explicit,
+    SourceManifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageConfig {
     pub key: String,
@@ -354,6 +382,40 @@ fn validate_external_imports(imports: &[ExternalTypeImportConfig]) -> Result<(),
         }
     }
 
+    Ok(())
+}
+
+fn validate_root_discovery(config: &RootDiscoveryConfig) -> Result<(), ConfigError> {
+    if config.mode == RootDiscoveryMode::SourceManifest && config.source_files.is_empty() {
+        return Err(ConfigError::Validation(
+            "root_discovery.source_files must not be empty in source_manifest mode".to_owned(),
+        ));
+    }
+
+    validate_relative_manifest_path("root_discovery.root_module_file", &config.root_module_file)?;
+    for source_file in &config.source_files {
+        validate_relative_manifest_path("root_discovery.source_files", source_file)?;
+    }
+
+    Ok(())
+}
+
+fn validate_relative_manifest_path(label: &str, value: &str) -> Result<(), ConfigError> {
+    if value.is_empty() {
+        return Err(ConfigError::Validation(format!("{label} cannot be empty")));
+    }
+    if value.contains('\\') || Path::new(value).is_absolute() {
+        return Err(ConfigError::Validation(format!(
+            "{label} path `{value}` must be relative and use forward slashes"
+        )));
+    }
+    for part in value.split('/') {
+        if matches!(part, "" | "." | "..") {
+            return Err(ConfigError::Validation(format!(
+                "{label} path `{value}` contains an unsafe component"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -520,6 +582,8 @@ mod tests {
             config.typescript.wire_contract,
             TypeScriptWireContract::JsonExchange
         );
+        assert_eq!(config.root_discovery.mode, RootDiscoveryMode::Explicit);
+        assert!(config.root_discovery.source_files.is_empty());
         assert_eq!(config.typescript.layout, TypeScriptLayout::Bundle);
         assert_eq!(config.typescript.bundle_file, "types.ts");
         assert_eq!(config.typescript.emit, TsEmit::Ts);
@@ -612,6 +676,54 @@ mod tests {
         let err = Config::from_toml_str("[typescript]\nlayout = \"single_file\"\n").unwrap_err();
 
         assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn parses_source_manifest_root_discovery() {
+        let config = Config::from_toml_str(
+            r#"
+[root_discovery]
+mode = "source_manifest"
+source_files = ["src/lib.rs", "src/events.rs"]
+root_module_file = "src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.root_discovery.mode,
+            RootDiscoveryMode::SourceManifest
+        );
+        assert_eq!(
+            config.root_discovery.source_files,
+            ["src/lib.rs", "src/events.rs"]
+        );
+        assert_eq!(
+            config.root_discovery.root_module_file,
+            "src/generated/dto_roots.rs"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_source_manifest_roots() {
+        let err =
+            Config::from_toml_str("[root_discovery]\nmode = \"source_manifest\"\n").unwrap_err();
+
+        assert!(err.to_string().contains("source_files must not be empty"));
+    }
+
+    #[test]
+    fn rejects_unsafe_source_manifest_paths() {
+        let err = Config::from_toml_str(
+            r#"
+[root_discovery]
+mode = "source_manifest"
+source_files = ["../src/lib.rs"]
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("unsafe component"));
     }
 
     #[test]

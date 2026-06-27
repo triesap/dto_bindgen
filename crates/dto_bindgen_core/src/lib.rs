@@ -25,8 +25,8 @@ pub use canonical::{CanonicalRegistry, canonical_registry_json_bytes, canonical_
 pub use config::{
     CONFIG_SCHEMA_VERSION, Config, ConfigError, ExportConfig, ExternalTypeImportConfig,
     ImportExtension, LargeIntPolicy, ModuleResolution, NumericConfig, PackageConfig, PythonConfig,
-    PythonMode, TsEmit, TypeScriptConfig, TypeScriptLayout, TypeScriptStyle,
-    TypeScriptWireContract, UnknownFieldsPolicy, WireFormat,
+    PythonMode, RootDiscoveryConfig, RootDiscoveryMode, TsEmit, TypeScriptConfig, TypeScriptLayout,
+    TypeScriptStyle, TypeScriptWireContract, UnknownFieldsPolicy, WireFormat,
 };
 pub use definitions::{
     ContainerAttrs, EnumDef, EnumRepr, FieldDef, GenericParam, StructDef, TypeDef, VariantDef,

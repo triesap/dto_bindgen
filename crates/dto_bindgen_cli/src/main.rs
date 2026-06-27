@@ -67,6 +67,18 @@ fn run_command(options: CliOptions, stdout: &mut String, stderr: &mut String) ->
                         .expect("writing to a String cannot fail");
                     writeln!(stdout, "python.out_dir = {}", config.python.out_dir)
                         .expect("writing to a String cannot fail");
+                    writeln!(
+                        stdout,
+                        "root_discovery.mode = {}",
+                        root_discovery_mode_name(config.root_discovery.mode)
+                    )
+                    .expect("writing to a String cannot fail");
+                    writeln!(
+                        stdout,
+                        "root_discovery.source_files = {}",
+                        config.root_discovery.source_files.len()
+                    )
+                    .expect("writing to a String cannot fail");
                     0
                 }
                 Err(source) => {
@@ -368,6 +380,13 @@ fn write_report_file(path: &Path, contents: &str) -> Result<(), String> {
     }
     fs::write(path, contents)
         .map_err(|source| format!("failed to write `{}`: {source}", path.display()))
+}
+
+fn root_discovery_mode_name(mode: dto_bindgen::config::RootDiscoveryMode) -> &'static str {
+    match mode {
+        dto_bindgen::config::RootDiscoveryMode::Explicit => "explicit",
+        dto_bindgen::config::RootDiscoveryMode::SourceManifest => "source_manifest",
+    }
 }
 
 fn report_explicit_roots_required(options: &CliOptions, stderr: &mut String) -> i32 {
