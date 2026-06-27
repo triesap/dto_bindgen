@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    BackendId, Diagnostic, GeneratedFileId, Namespace, RustTypeId, TargetTypeName, TypeDef, TypeId,
+    BackendId, Diagnostic, FieldPresence, GeneratedFileId, Namespace, RustTypeId, TargetTypeName,
+    TypeDef, TypeId,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37,6 +38,35 @@ impl Registry {
 
     pub fn type_def(&self, type_id: TypeId) -> Option<&TypeDef> {
         self.types_by_id.get(&type_id)
+    }
+
+    pub fn type_export_names(&self) -> impl Iterator<Item = &str> {
+        self.types_by_id.values().map(|def| match def {
+            TypeDef::Struct(def) => def.export_name.as_str(),
+            TypeDef::Enum(def) => def.export_name.as_str(),
+        })
+    }
+
+    pub fn type_rust_names(&self) -> impl Iterator<Item = &str> {
+        self.types_by_id.values().map(|def| match def {
+            TypeDef::Struct(def) => def.rust_name.as_str(),
+            TypeDef::Enum(def) => def.rust_name.as_str(),
+        })
+    }
+
+    pub fn struct_field_presence(
+        &self,
+        export_name: &str,
+        rust_field_name: &str,
+    ) -> Option<&FieldPresence> {
+        self.types_by_id.values().find_map(|def| match def {
+            TypeDef::Struct(def) if def.export_name == export_name => def
+                .fields
+                .iter()
+                .find(|field| field.rust_name.as_str() == rust_field_name)
+                .map(|field| &field.presence),
+            _ => None,
+        })
     }
 
     pub fn mark_root(&mut self, type_id: TypeId) {
@@ -119,7 +149,10 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DiagnosticCode, EnumDef, EnumRepr, Severity, SourceSpan, StructDef};
+    use crate::{
+        DiagnosticCode, EnumDef, EnumRepr, FieldDef, IdentName, Severity, SourceSpan, StructDef,
+        TargetFieldNames, TypeRef, WireFieldNames,
+    };
 
     fn span() -> SourceSpan {
         SourceSpan::new("src/types.rs", 1, 1)
@@ -131,6 +164,41 @@ mod tests {
 
     fn enum_type(name: &str) -> TypeDef {
         TypeDef::Enum(EnumDef::new(name, name, EnumRepr::External, span()))
+    }
+
+    #[test]
+    fn exposes_descriptor_names_and_field_presence_without_typedef_matching() {
+        let mut registry = Registry::new();
+        let field = FieldDef::new(
+            IdentName::new("nickname"),
+            WireFieldNames::same("nickname"),
+            TargetFieldNames::new("nickname", "nickname"),
+            TypeRef::String,
+            span(),
+        )
+        .with_presence(FieldPresence::optional_nullable());
+        let user = StructDef::new("User", "SdkUser", span()).with_field(field);
+
+        registry.register_type(RustTypeId::new("sdk", "sdk", "User"), TypeDef::Struct(user));
+        registry.register_type(
+            RustTypeId::new("sdk", "sdk", "Event"),
+            enum_type("SdkEvent"),
+        );
+
+        assert_eq!(
+            registry.type_export_names().collect::<Vec<_>>(),
+            ["SdkUser", "SdkEvent"]
+        );
+        assert_eq!(
+            registry.type_rust_names().collect::<Vec<_>>(),
+            ["User", "SdkEvent"]
+        );
+        let presence = registry
+            .struct_field_presence("SdkUser", "nickname")
+            .expect("field presence is available");
+        assert!(presence.nullable);
+        assert!(!presence.required_on_deserialize);
+        assert_eq!(registry.struct_field_presence("SdkEvent", "nickname"), None);
     }
 
     #[test]
