@@ -62,7 +62,8 @@ impl Config {
         validate_external_imports(&self.typescript.external_types)?;
         validate_packages(&self.packages)?;
         validate_package_graph(&self.packages)?;
-        validate_root_discovery(&self.root_discovery)?;
+        validate_root_discovery("root_discovery", &self.root_discovery)?;
+        validate_package_root_discovery(&self.root_discovery, &self.packages)?;
 
         Ok(())
     }
@@ -269,6 +270,24 @@ pub enum RootDiscoveryMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PackageRootDiscoveryConfig {
+    pub mode: RootDiscoveryMode,
+    pub source_files: Vec<String>,
+    pub root_module_file: String,
+}
+
+impl Default for PackageRootDiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            mode: RootDiscoveryMode::Explicit,
+            source_files: Vec::new(),
+            root_module_file: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageConfig {
     pub key: String,
@@ -277,6 +296,8 @@ pub struct PackageConfig {
     #[serde(rename = "npm")]
     pub npm_name: String,
     pub out_dir: String,
+    #[serde(default)]
+    pub root_discovery: PackageRootDiscoveryConfig,
     #[serde(default, deserialize_with = "deserialize_rust_type_ids")]
     pub roots: Vec<RustTypeId>,
     #[serde(default, rename = "external_type")]
@@ -385,18 +406,116 @@ fn validate_external_imports(imports: &[ExternalTypeImportConfig]) -> Result<(),
     Ok(())
 }
 
-fn validate_root_discovery(config: &RootDiscoveryConfig) -> Result<(), ConfigError> {
+fn validate_root_discovery(label: &str, config: &RootDiscoveryConfig) -> Result<(), ConfigError> {
     if config.mode == RootDiscoveryMode::SourceManifest && config.source_files.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "{label}.source_files must not be empty in source_manifest mode"
+        )));
+    }
+    if config.mode == RootDiscoveryMode::Explicit && !config.source_files.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "{label}.source_files requires source_manifest mode"
+        )));
+    }
+
+    validate_relative_rust_path(
+        &format!("{label}.root_module_file"),
+        &config.root_module_file,
+    )?;
+    for source_file in &config.source_files {
+        validate_relative_rust_path(&format!("{label}.source_files"), source_file)?;
+    }
+
+    Ok(())
+}
+
+fn validate_package_root_discovery(
+    root_discovery: &RootDiscoveryConfig,
+    packages: &[PackageConfig],
+) -> Result<(), ConfigError> {
+    let mut root_modules = BTreeSet::<String>::new();
+    let mut source_files = BTreeSet::<String>::new();
+    let package_source_manifests = packages
+        .iter()
+        .filter(|package| package.root_discovery.mode == RootDiscoveryMode::SourceManifest)
+        .collect::<Vec<_>>();
+
+    if root_discovery.mode == RootDiscoveryMode::SourceManifest
+        && !package_source_manifests.is_empty()
+    {
         return Err(ConfigError::Validation(
-            "root_discovery.source_files must not be empty in source_manifest mode".to_owned(),
+            "top-level root_discovery source_manifest cannot be combined with package root_discovery source_manifest".to_owned(),
         ));
     }
 
-    validate_relative_manifest_path("root_discovery.root_module_file", &config.root_module_file)?;
-    for source_file in &config.source_files {
-        validate_relative_manifest_path("root_discovery.source_files", source_file)?;
+    for package in packages {
+        let label = format!("package `{}` root_discovery", package.key);
+        validate_package_root_discovery_config(&label, &package.root_discovery)?;
+
+        if package.root_discovery.mode != RootDiscoveryMode::SourceManifest {
+            continue;
+        }
+
+        if !root_modules.insert(package.root_discovery.root_module_file.clone()) {
+            return Err(ConfigError::Validation(format!(
+                "duplicate package root_module_file `{}`",
+                package.root_discovery.root_module_file
+            )));
+        }
+
+        for source_file in &package.root_discovery.source_files {
+            if !source_files.insert(source_file.clone()) {
+                return Err(ConfigError::Validation(format!(
+                    "duplicate package source file `{source_file}`"
+                )));
+            }
+        }
     }
 
+    Ok(())
+}
+
+fn validate_package_root_discovery_config(
+    label: &str,
+    config: &PackageRootDiscoveryConfig,
+) -> Result<(), ConfigError> {
+    if config.mode == RootDiscoveryMode::SourceManifest {
+        if config.source_files.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "{label}.source_files must not be empty in source_manifest mode"
+            )));
+        }
+        if config.root_module_file.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "{label}.root_module_file cannot be empty in source_manifest mode"
+            )));
+        }
+    } else if !config.source_files.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "{label}.source_files requires source_manifest mode"
+        )));
+    }
+
+    if !config.root_module_file.is_empty() {
+        validate_relative_rust_path(
+            &format!("{label}.root_module_file"),
+            &config.root_module_file,
+        )?;
+    }
+    for source_file in &config.source_files {
+        validate_relative_rust_path(&format!("{label}.source_files"), source_file)?;
+    }
+
+    Ok(())
+}
+
+fn validate_relative_rust_path(label: &str, value: &str) -> Result<(), ConfigError> {
+    validate_relative_manifest_path(label, value)?;
+    if !value.ends_with(".rs") {
+        return Err(ConfigError::Validation(format!(
+            "{label} path `{value}` must use a .rs extension"
+        )));
+    }
     Ok(())
 }
 
@@ -825,6 +944,169 @@ from = "@radroots/core-bindings"
         assert_eq!(package.npm_name, "@radroots/event-bindings");
         assert_eq!(package.roots[0].rust_ident, "EventEnvelope");
         assert_eq!(package.external_types[0].typescript, "RadrootsCoreMoney");
+    }
+
+    #[test]
+    fn parses_package_scoped_source_manifest_root_discovery() {
+        let config = Config::from_toml_str(
+            r#"
+[[package]]
+key = "core"
+rust_package = "radroots-core"
+rust_crate = "radroots_core"
+npm = "@radroots/core-bindings"
+out_dir = "packages/core-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/lib.rs", "crates/core/src/money.rs"]
+root_module_file = "crates/core/src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap();
+
+        let root_discovery = &config.packages[0].root_discovery;
+        assert_eq!(root_discovery.mode, RootDiscoveryMode::SourceManifest);
+        assert_eq!(
+            root_discovery.source_files,
+            ["crates/core/src/lib.rs", "crates/core/src/money.rs"]
+        );
+        assert_eq!(
+            root_discovery.root_module_file,
+            "crates/core/src/generated/dto_roots.rs"
+        );
+    }
+
+    #[test]
+    fn rejects_non_rs_root_discovery_paths() {
+        let err = Config::from_toml_str(
+            r#"
+[root_discovery]
+mode = "source_manifest"
+source_files = ["src/lib.txt"]
+root_module_file = "src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("must use a .rs extension"));
+    }
+
+    #[test]
+    fn rejects_source_files_without_source_manifest_mode() {
+        let err = Config::from_toml_str(
+            r#"
+[root_discovery]
+source_files = ["src/lib.rs"]
+"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("source_files requires source_manifest mode")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_package_root_module_files() {
+        let err = Config::from_toml_str(
+            r#"
+[[package]]
+key = "core"
+rust_package = "radroots-core"
+rust_crate = "radroots_core"
+npm = "@radroots/core-bindings"
+out_dir = "packages/core-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/lib.rs"]
+root_module_file = "crates/core/src/generated/dto_roots.rs"
+
+[[package]]
+key = "events"
+rust_package = "radroots-events"
+rust_crate = "radroots_events"
+npm = "@radroots/event-bindings"
+out_dir = "packages/event-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/events/src/lib.rs"]
+root_module_file = "crates/core/src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("duplicate package root_module_file")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_package_source_files() {
+        let err = Config::from_toml_str(
+            r#"
+[[package]]
+key = "core"
+rust_package = "radroots-core"
+rust_crate = "radroots_core"
+npm = "@radroots/core-bindings"
+out_dir = "packages/core-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/lib.rs"]
+root_module_file = "crates/core/src/generated/dto_roots.rs"
+
+[[package]]
+key = "events"
+rust_package = "radroots-events"
+rust_crate = "radroots_events"
+npm = "@radroots/event-bindings"
+out_dir = "packages/event-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/lib.rs"]
+root_module_file = "crates/events/src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("duplicate package source file"));
+    }
+
+    #[test]
+    fn rejects_mixed_top_level_and_package_source_manifests() {
+        let err = Config::from_toml_str(
+            r#"
+[root_discovery]
+mode = "source_manifest"
+source_files = ["src/lib.rs"]
+root_module_file = "src/generated/dto_roots.rs"
+
+[[package]]
+key = "core"
+rust_package = "radroots-core"
+rust_crate = "radroots_core"
+npm = "@radroots/core-bindings"
+out_dir = "packages/core-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/lib.rs"]
+root_module_file = "crates/core/src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("top-level root_discovery source_manifest cannot be combined")
+        );
     }
 
     #[test]

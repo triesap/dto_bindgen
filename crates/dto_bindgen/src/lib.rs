@@ -7,9 +7,9 @@ pub use dto_bindgen_macros::Dto;
 pub mod config {
     pub use dto_bindgen_core::{
         CONFIG_SCHEMA_VERSION, Config, ConfigError, ExportConfig, ImportExtension, LargeIntPolicy,
-        ModuleResolution, NumericConfig, PythonConfig, PythonMode, RootDiscoveryConfig,
-        RootDiscoveryMode, TsEmit, TypeScriptConfig, TypeScriptStyle, TypeScriptWireContract,
-        UnknownFieldsPolicy, WireFormat,
+        ModuleResolution, NumericConfig, PackageRootDiscoveryConfig, PythonConfig, PythonMode,
+        RootDiscoveryConfig, RootDiscoveryMode, TsEmit, TypeScriptConfig, TypeScriptStyle,
+        TypeScriptWireContract, UnknownFieldsPolicy, WireFormat,
     };
 }
 
