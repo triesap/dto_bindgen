@@ -10,8 +10,8 @@ use dto_bindgen_core::{
 use sha2::{Digest, Sha256};
 
 pub use dto_bindgen_core::{
-    DescribeCtx, ExportError, ExportOptions, ExportReport, Registry, RootDescriptor, TypeRef,
-    VERSION, build_registry,
+    DescribeCtx, ExportError, ExportOptions, ExportReport, Registry, RootDescriptor, TypeDef,
+    TypeRef, VERSION, build_registry,
 };
 
 pub fn export_with_roots(

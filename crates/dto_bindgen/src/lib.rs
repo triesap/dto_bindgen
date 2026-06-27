@@ -61,6 +61,7 @@ mod tests {
     fn exposes_descriptor_api() {
         let registry =
             crate::export::build_registry([crate::export::RootDescriptor::new::<String>()]);
+        let _type_defs: Vec<&crate::export::TypeDef> = registry.types_by_id.values().collect();
 
         assert!(registry.has_errors());
     }
