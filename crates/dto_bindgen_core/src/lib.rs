@@ -12,6 +12,7 @@ mod generated;
 mod identity;
 mod inventory;
 mod registry;
+mod roots;
 mod source;
 mod types;
 mod validation;
@@ -55,6 +56,7 @@ pub use inventory::{
     build_inventory_report, render_inventory_json, render_inventory_markdown, scan_rust_source,
 };
 pub use registry::Registry;
+pub use roots::{GeneratedRoot, GeneratedRootModule, RootModuleError, generate_root_module};
 pub use source::{SourceFile, SourcePosition, SourceSpan};
 pub use types::{BytesRepr, Primitive, TargetOverride, TypeRef};
 pub use validation::{validate_registry, validate_registry_for_backend};
