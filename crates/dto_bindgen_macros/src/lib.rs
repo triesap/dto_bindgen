@@ -605,6 +605,7 @@ struct FieldAttrs {
     dto_as: Option<DtoAsAttr>,
     bytes_repr: Option<BytesReprAttr>,
     ts_type: Option<String>,
+    serde_with: Option<String>,
 }
 
 impl FieldAttrs {
@@ -681,6 +682,9 @@ impl FieldAttrs {
                             "only serde(skip_serializing_if = \"Option::is_none\") is supported for `Dto` derive",
                         ))
                     }
+                } else if meta.path.is_ident("with") {
+                    parsed.serde_with = Some(parse_string_value(&meta)?);
+                    Ok(())
                 } else if meta.path.is_ident("alias") {
                     Err(meta.error("unsupported serde field attribute `alias` for `Dto` derive"))
                 } else if meta.path.is_ident("skip_serializing")
@@ -703,6 +707,19 @@ impl FieldAttrs {
                     .first()
                     .expect("ts_type is parsed only when attrs are present"),
                 "dto(ts(type = \"...\")) cannot be combined with dto(as), dto(bytes), dto(int), or dto(int_repr)",
+            ));
+        }
+
+        if parsed.serde_with.is_some()
+            && parsed.dto_as.is_none()
+            && parsed.bytes_repr.is_none()
+            && parsed.ts_type.is_none()
+        {
+            return Err(syn::Error::new_spanned(
+                attrs
+                    .first()
+                    .expect("serde_with is parsed only when attrs are present"),
+                "serde(with = \"...\") requires an explicit dto(as), dto(bytes), or dto(ts(type = \"...\")) field mapping",
             ));
         }
 
@@ -1392,6 +1409,35 @@ mod tests {
     }
 
     #[test]
+    fn supports_serde_with_when_field_has_dto_mapping() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Price {
+                #[serde(with = "decimal_str")]
+                #[dto(as = "string")]
+                amount: Decimal,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("TypeRef :: String"));
+    }
+
+    #[test]
+    fn rejects_serde_with_without_field_dto_mapping() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Price {
+                #[serde(with = "decimal_str")]
+                amount: Decimal,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("serde(with"));
+    }
+
+    #[test]
     fn supports_field_level_typescript_type_override() {
         let input: DeriveInput = syn::parse_quote! {
             struct Manifest {
@@ -1589,10 +1635,7 @@ mod tests {
 
         let err = expand_dto(input).unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("unsupported serde field attribute")
-        );
+        assert!(err.to_string().contains("serde(with"));
     }
 
     #[test]
