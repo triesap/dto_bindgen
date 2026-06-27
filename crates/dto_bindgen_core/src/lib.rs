@@ -23,9 +23,10 @@ pub use backend::{
 };
 pub use canonical::{CanonicalRegistry, canonical_registry_json_bytes, canonical_registry_sha256};
 pub use config::{
-    CONFIG_SCHEMA_VERSION, Config, ConfigError, ExportConfig, ImportExtension, LargeIntPolicy,
-    ModuleResolution, NumericConfig, PythonConfig, PythonMode, TsEmit, TypeScriptConfig,
-    TypeScriptLayout, TypeScriptStyle, TypeScriptWireContract, UnknownFieldsPolicy, WireFormat,
+    CONFIG_SCHEMA_VERSION, Config, ConfigError, ExportConfig, ExternalTypeImportConfig,
+    ImportExtension, LargeIntPolicy, ModuleResolution, NumericConfig, PythonConfig, PythonMode,
+    TsEmit, TypeScriptConfig, TypeScriptLayout, TypeScriptStyle, TypeScriptWireContract,
+    UnknownFieldsPolicy, WireFormat,
 };
 pub use definitions::{
     ContainerAttrs, EnumDef, EnumRepr, FieldDef, GenericParam, StructDef, TypeDef, VariantDef,
@@ -42,7 +43,9 @@ pub use generated::{
     GeneratedFile, GeneratedFileSet, GeneratedFileSetError, GeneratedManifest,
     GeneratedManifestFile, GeneratedPathError, GeneratedRelativePath,
 };
-pub use identity::{GeneratedFileId, Namespace, RustTypeId, TargetTypeName, TypeId};
+pub use identity::{
+    GeneratedFileId, Namespace, ParseRustTypeIdError, RustTypeId, TargetTypeName, TypeId,
+};
 pub use inventory::{
     InventoryAttrUsage, InventoryAttribute, InventoryField, InventoryFieldUsage, InventoryFinding,
     InventoryItem, InventoryItemKind, InventoryLocation, InventoryManifest, InventoryManifestError,

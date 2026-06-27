@@ -1,4 +1,5 @@
 use core::fmt;
+use core::str::FromStr;
 
 use crate::BackendId;
 
@@ -75,6 +76,130 @@ impl fmt::Display for RustTypeId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseRustTypeIdError {
+    reason: &'static str,
+}
+
+impl ParseRustTypeIdError {
+    const fn new(reason: &'static str) -> Self {
+        Self { reason }
+    }
+}
+
+impl fmt::Display for ParseRustTypeIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid Rust type identity: {}", self.reason)
+    }
+}
+
+impl std::error::Error for ParseRustTypeIdError {}
+
+impl FromStr for RustTypeId {
+    type Err = ParseRustTypeIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() || value.trim() != value {
+            return Err(ParseRustTypeIdError::new(
+                "identity must be non-empty and unpadded",
+            ));
+        }
+
+        let (package_name, rest) = value
+            .split_once(':')
+            .ok_or_else(|| ParseRustTypeIdError::new("expected `package:crate::path::Type`"))?;
+        if package_name.is_empty() {
+            return Err(ParseRustTypeIdError::new("package name is empty"));
+        }
+
+        let mut parts = rest.split("::").collect::<Vec<_>>();
+        if parts.len() < 2 {
+            return Err(ParseRustTypeIdError::new(
+                "expected crate name and Rust type identifier",
+            ));
+        }
+
+        let crate_name = parts.remove(0);
+        if !is_rust_identifier(crate_name) {
+            return Err(ParseRustTypeIdError::new(
+                "crate name is not a Rust identifier",
+            ));
+        }
+
+        let raw_ident = parts
+            .pop()
+            .ok_or_else(|| ParseRustTypeIdError::new("Rust type identifier is missing"))?;
+        let (rust_ident, generic_parameters) = parse_ident_and_generics(raw_ident)?;
+        if !is_rust_identifier(rust_ident) {
+            return Err(ParseRustTypeIdError::new(
+                "Rust type identifier is not a Rust identifier",
+            ));
+        }
+
+        let mut module_path = Vec::new();
+        for module in parts {
+            if !is_rust_identifier(module) {
+                return Err(ParseRustTypeIdError::new(
+                    "module path contains a non-Rust identifier",
+                ));
+            }
+            module_path.push(module.to_owned());
+        }
+
+        Ok(Self {
+            package_name: package_name.to_owned(),
+            crate_name: crate_name.to_owned(),
+            module_path,
+            rust_ident: rust_ident.to_owned(),
+            generic_parameters,
+        })
+    }
+}
+
+fn parse_ident_and_generics(value: &str) -> Result<(&str, Vec<String>), ParseRustTypeIdError> {
+    let Some(start) = value.find('<') else {
+        return Ok((value, Vec::new()));
+    };
+
+    if !value.ends_with('>') {
+        return Err(ParseRustTypeIdError::new(
+            "generic parameter list is not closed",
+        ));
+    }
+
+    let ident = &value[..start];
+    let generic_list = &value[start + 1..value.len() - 1];
+    if generic_list.is_empty() {
+        return Err(ParseRustTypeIdError::new(
+            "generic parameter list cannot be empty",
+        ));
+    }
+
+    let mut generic_parameters = Vec::new();
+    for generic in generic_list.split(',') {
+        let generic = generic.trim();
+        if !is_rust_identifier(generic) {
+            return Err(ParseRustTypeIdError::new(
+                "generic parameter is not a Rust identifier",
+            ));
+        }
+        generic_parameters.push(generic.to_owned());
+    }
+
+    Ok((ident, generic_parameters))
+}
+
+fn is_rust_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Namespace(String);
 
@@ -147,6 +272,34 @@ mod tests {
         assert_eq!(
             rust_id.to_string(),
             "radroots-sdk:radroots_sdk::types::identity::UserProfile<T>"
+        );
+    }
+
+    #[test]
+    fn parses_rust_type_identity() {
+        let rust_id = "radroots-sdk:radroots_sdk::types::identity::UserProfile<T, U>"
+            .parse::<RustTypeId>()
+            .unwrap();
+
+        assert_eq!(rust_id.package_name, "radroots-sdk");
+        assert_eq!(rust_id.crate_name, "radroots_sdk");
+        assert_eq!(rust_id.module_path, ["types", "identity"]);
+        assert_eq!(rust_id.rust_ident, "UserProfile");
+        assert_eq!(rust_id.generic_parameters, ["T", "U"]);
+    }
+
+    #[test]
+    fn rejects_invalid_rust_type_identity() {
+        assert!("radroots_sdk::UserProfile".parse::<RustTypeId>().is_err());
+        assert!(
+            "radroots-sdk:radroots-sdk::UserProfile"
+                .parse::<RustTypeId>()
+                .is_err()
+        );
+        assert!(
+            "radroots-sdk:radroots_sdk::9UserProfile"
+                .parse::<RustTypeId>()
+                .is_err()
         );
     }
 

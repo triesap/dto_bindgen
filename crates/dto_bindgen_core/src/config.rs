@@ -1,7 +1,10 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
 
 use serde::Deserialize;
+
+use crate::RustTypeId;
 
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
@@ -50,6 +53,8 @@ impl Config {
                 supported: CONFIG_SCHEMA_VERSION,
             });
         }
+
+        validate_external_imports(&self.typescript.external_types)?;
 
         Ok(())
     }
@@ -115,6 +120,8 @@ pub struct TypeScriptConfig {
     pub type_only_imports: bool,
     pub strict_null_checks_required: bool,
     pub style: TypeScriptStyle,
+    #[serde(rename = "external_type")]
+    pub external_types: Vec<ExternalTypeImportConfig>,
 }
 
 impl Default for TypeScriptConfig {
@@ -131,6 +138,7 @@ impl Default for TypeScriptConfig {
             type_only_imports: true,
             strict_null_checks_required: true,
             style: TypeScriptStyle::DtoBindgen,
+            external_types: Vec::new(),
         }
     }
 }
@@ -227,6 +235,23 @@ pub enum UnknownFieldsPolicy {
     Deny,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalTypeImportConfig {
+    #[serde(deserialize_with = "deserialize_rust_type_id")]
+    pub rust: RustTypeId,
+    pub typescript: String,
+    pub from: String,
+}
+
+fn deserialize_rust_type_id<'de, D>(deserializer: D) -> Result<RustTypeId, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    value.parse().map_err(serde::de::Error::custom)
+}
+
 #[derive(Debug)]
 pub enum ConfigError {
     Read {
@@ -238,6 +263,7 @@ pub enum ConfigError {
         found: u32,
         supported: u32,
     },
+    Validation(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -251,6 +277,7 @@ impl fmt::Display for ConfigError {
                 f,
                 "unsupported config schema_version {found}; supported schema_version is {supported}"
             ),
+            Self::Validation(message) => f.write_str(message),
         }
     }
 }
@@ -261,8 +288,51 @@ impl std::error::Error for ConfigError {
             Self::Read { source, .. } => Some(source),
             Self::Toml(source) => Some(source),
             Self::UnsupportedSchemaVersion { .. } => None,
+            Self::Validation(_) => None,
         }
     }
+}
+
+fn validate_external_imports(imports: &[ExternalTypeImportConfig]) -> Result<(), ConfigError> {
+    let mut seen_rust = BTreeSet::<RustTypeId>::new();
+    let mut seen_bindings = BTreeSet::<(String, String)>::new();
+
+    for import in imports {
+        if !seen_rust.insert(import.rust.clone()) {
+            return Err(ConfigError::Validation(format!(
+                "duplicate external type import for `{}`",
+                import.rust
+            )));
+        }
+        if !is_valid_typescript_module_specifier(&import.from) {
+            return Err(ConfigError::Validation(format!(
+                "invalid TypeScript module specifier `{}`",
+                import.from
+            )));
+        }
+        if import.typescript.is_empty() {
+            return Err(ConfigError::Validation(
+                "external type import has empty TypeScript name".to_owned(),
+            ));
+        }
+        if !seen_bindings.insert((import.from.clone(), import.typescript.clone())) {
+            return Err(ConfigError::Validation(format!(
+                "duplicate external TypeScript import binding `{}` from `{}`",
+                import.typescript, import.from
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn is_valid_typescript_module_specifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.trim() == value
+        && !value.contains('"')
+        && !value.contains('\'')
+        && !value.contains('\\')
+        && !value.chars().any(char::is_control)
 }
 
 #[cfg(test)]
@@ -377,6 +447,80 @@ mod tests {
         let err = Config::from_toml_str("[typescript]\nlayout = \"single_file\"\n").unwrap_err();
 
         assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn parses_typescript_external_type_imports() {
+        let config = Config::from_toml_str(
+            r#"
+[[typescript.external_type]]
+rust = "radroots-core:radroots_core::money::RadrootsCoreMoney"
+typescript = "RadrootsCoreMoney"
+from = "@radroots/core-bindings"
+"#,
+        )
+        .unwrap();
+
+        let external = &config.typescript.external_types[0];
+        assert_eq!(external.rust.package_name, "radroots-core");
+        assert_eq!(external.rust.crate_name, "radroots_core");
+        assert_eq!(external.rust.module_path, ["money"]);
+        assert_eq!(external.rust.rust_ident, "RadrootsCoreMoney");
+        assert_eq!(external.typescript, "RadrootsCoreMoney");
+        assert_eq!(external.from, "@radroots/core-bindings");
+    }
+
+    #[test]
+    fn rejects_duplicate_typescript_external_type_imports() {
+        let err = Config::from_toml_str(
+            r#"
+[[typescript.external_type]]
+rust = "radroots-core:radroots_core::money::RadrootsCoreMoney"
+typescript = "RadrootsCoreMoney"
+from = "@radroots/core-bindings"
+
+[[typescript.external_type]]
+rust = "radroots-core:radroots_core::money::RadrootsCoreMoney"
+typescript = "RadrootsCoreMoney"
+from = "@radroots/core-bindings"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("duplicate external type import"));
+    }
+
+    #[test]
+    fn rejects_invalid_external_type_rust_identity() {
+        let err = Config::from_toml_str(
+            r#"
+[[typescript.external_type]]
+rust = "radroots_core::money::RadrootsCoreMoney"
+typescript = "RadrootsCoreMoney"
+from = "@radroots/core-bindings"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("invalid Rust type identity"));
+    }
+
+    #[test]
+    fn rejects_invalid_external_type_module_specifier() {
+        let err = Config::from_toml_str(
+            r#"
+[[typescript.external_type]]
+rust = "radroots-core:radroots_core::money::RadrootsCoreMoney"
+typescript = "RadrootsCoreMoney"
+from = ""
+"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("invalid TypeScript module specifier")
+        );
     }
 
     #[test]
