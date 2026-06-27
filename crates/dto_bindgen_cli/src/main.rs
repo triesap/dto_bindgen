@@ -4,6 +4,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CONFIG_PATH: &str = "dto_bindgen.toml";
 const DEFAULT_INVENTORY_MANIFEST_PATH: &str = "dto_bindgen.inventory.toml";
@@ -552,8 +553,14 @@ fn write_source_manifest_roots(
     stdout: &mut String,
     stderr: &mut String,
 ) -> i32 {
-    for roots in root_modules {
-        if let Err(message) = write_report_file(&roots.root_module_path, &roots.module.contents) {
+    match stage_source_manifest_roots(root_modules) {
+        Ok(staged) => {
+            if let Err(message) = commit_staged_root_modules(staged) {
+                writeln!(stderr, "error: {message}").expect("writing to a String cannot fail");
+                return 1;
+            }
+        }
+        Err(message) => {
             writeln!(stderr, "error: {message}").expect("writing to a String cannot fail");
             return 1;
         }
@@ -562,6 +569,149 @@ fn write_source_manifest_roots(
     writeln!(stdout, "dto_bindgen roots ok").expect("writing to a String cannot fail");
     write_source_manifest_summary(stdout, root_modules);
     0
+}
+
+#[derive(Debug)]
+struct StagedRootModule {
+    temp_path: PathBuf,
+    target_path: PathBuf,
+}
+
+#[derive(Debug)]
+enum PreviousRootModule {
+    Missing,
+    Existing(Vec<u8>),
+}
+
+impl PreviousRootModule {
+    fn capture(path: &Path) -> Result<Self, String> {
+        match fs::read(path) {
+            Ok(bytes) => Ok(Self::Existing(bytes)),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Self::Missing),
+            Err(source) => Err(format!("failed to read `{}`: {source}", path.display())),
+        }
+    }
+}
+
+fn stage_source_manifest_roots(
+    root_modules: &[SourceManifestRoots],
+) -> Result<Vec<StagedRootModule>, String> {
+    let mut staged = Vec::new();
+    for (index, roots) in root_modules.iter().enumerate() {
+        match stage_root_module(roots, index) {
+            Ok(stage) => staged.push(stage),
+            Err(message) => {
+                cleanup_staged_root_modules(&staged);
+                return Err(message);
+            }
+        }
+    }
+    Ok(staged)
+}
+
+fn stage_root_module(
+    roots: &SourceManifestRoots,
+    index: usize,
+) -> Result<StagedRootModule, String> {
+    reject_unsafe_root_module_target(&roots.root_module_path)?;
+    let parent = roots.root_module_path.parent().ok_or_else(|| {
+        format!(
+            "generated root module `{}` has no parent",
+            roots.root_module_path.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|source| format!("failed to create `{}`: {source}", parent.display()))?;
+
+    let temp_path = temp_root_module_path(parent, index);
+    fs::write(&temp_path, roots.module.contents.as_bytes()).map_err(|source| {
+        format!(
+            "failed to write temp root module `{}`: {source}",
+            temp_path.display()
+        )
+    })?;
+    Ok(StagedRootModule {
+        temp_path,
+        target_path: roots.root_module_path.clone(),
+    })
+}
+
+fn reject_unsafe_root_module_target(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "generated root module `{}` crosses a symlink",
+            path.display()
+        )),
+        Ok(metadata) if metadata.is_dir() => Err(format!(
+            "generated root module `{}` is a directory",
+            path.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(format!("failed to inspect `{}`: {source}", path.display())),
+    }
+}
+
+fn commit_staged_root_modules(staged: Vec<StagedRootModule>) -> Result<(), String> {
+    let mut committed = Vec::new();
+    for index in 0..staged.len() {
+        let item = &staged[index];
+        let previous = match PreviousRootModule::capture(&item.target_path) {
+            Ok(previous) => previous,
+            Err(message) => {
+                cleanup_staged_root_modules(&staged[index..]);
+                rollback_root_modules(committed);
+                return Err(message);
+            }
+        };
+        match fs::rename(&item.temp_path, &item.target_path) {
+            Ok(()) => committed.push((item.target_path.clone(), previous)),
+            Err(source) => {
+                let message = format!(
+                    "failed to move temp root module `{}` to `{}`: {source}",
+                    item.temp_path.display(),
+                    item.target_path.display()
+                );
+                let _ = fs::remove_file(&item.temp_path);
+                cleanup_staged_root_modules(&staged[index + 1..]);
+                rollback_root_modules(committed);
+                return Err(message);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_staged_root_modules(staged: &[StagedRootModule]) {
+    for item in staged {
+        let _ = fs::remove_file(&item.temp_path);
+    }
+}
+
+fn rollback_root_modules(committed: Vec<(PathBuf, PreviousRootModule)>) {
+    for (path, previous) in committed.into_iter().rev() {
+        match previous {
+            PreviousRootModule::Missing => {
+                let _ = fs::remove_file(path);
+            }
+            PreviousRootModule::Existing(bytes) => {
+                let _ = fs::write(path, bytes);
+            }
+        }
+    }
+}
+
+fn temp_root_module_path(parent: &Path, index: usize) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    parent.join(format!(
+        ".dto_bindgen_roots.tmp.{}.{}.{}",
+        std::process::id(),
+        nonce,
+        index
+    ))
 }
 
 fn check_source_manifest_roots(
@@ -1456,6 +1606,52 @@ package = "sdk_dto"
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn roots_command_does_not_partially_write_package_root_modules() {
+        let root = temp_project();
+        let config_path = write_two_package_source_manifest_project(&root);
+        let core_generated_dir = root.join("crates/core/src/generated");
+        let core_generated_roots = core_generated_dir.join("dto_roots.rs");
+        std::fs::create_dir_all(&core_generated_dir).unwrap();
+        std::fs::write(&core_generated_roots, "old core roots\n").unwrap();
+        std::fs::write(
+            root.join("crates/events/src/generated"),
+            "not a directory\n",
+        )
+        .unwrap();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        let code = run(
+            vec![
+                "roots".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 1);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("failed to inspect"));
+        assert_eq!(
+            std::fs::read_to_string(&core_generated_roots).unwrap(),
+            "old core roots\n"
+        );
+        assert!(
+            std::fs::read_dir(&core_generated_dir)
+                .unwrap()
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".tmp."))
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn write_source_manifest_project(root: &Path) -> PathBuf {
         let src = root.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -1519,6 +1715,66 @@ out_dir = "packages/core-bindings/src/generated"
 mode = "source_manifest"
 source_files = ["crates/core/src/sdk.rs"]
 root_module_file = "crates/core/src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap();
+        config_path
+    }
+
+    fn write_two_package_source_manifest_project(root: &Path) -> PathBuf {
+        let core_src = root.join("crates/core/src");
+        let events_src = root.join("crates/events/src");
+        std::fs::create_dir_all(&core_src).unwrap();
+        std::fs::create_dir_all(&events_src).unwrap();
+        std::fs::write(
+            core_src.join("sdk.rs"),
+            r#"
+#[derive(Dto)]
+#[dto(export)]
+struct CoreProfile {
+    id: String,
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            events_src.join("sdk.rs"),
+            r#"
+#[derive(Dto)]
+#[dto(export)]
+struct EventProfile {
+    id: String,
+}
+"#,
+        )
+        .unwrap();
+        let config_path = root.join("dto_bindgen.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[[package]]
+key = "core"
+rust_package = "radroots-core"
+rust_crate = "radroots_core"
+npm = "@radroots/core-bindings"
+out_dir = "packages/core-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/sdk.rs"]
+root_module_file = "crates/core/src/generated/dto_roots.rs"
+
+[[package]]
+key = "events"
+rust_package = "radroots-events"
+rust_crate = "radroots_events"
+npm = "@radroots/events-bindings"
+out_dir = "packages/events-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/events/src/sdk.rs"]
+root_module_file = "crates/events/src/generated/dto_roots.rs"
 "#,
         )
         .unwrap();
