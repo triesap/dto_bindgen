@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
@@ -519,6 +520,9 @@ fn build_source_manifest_root(
     job: SourceManifestJob,
 ) -> Result<SourceManifestRoots, String> {
     let config_dir = config_dir(&options.config_path);
+    if job.package_key.is_none() {
+        validate_top_level_source_manifest_crate_roots(&job.source_files)?;
+    }
     let mut inventories = Vec::new();
 
     for source_file in &job.source_files {
@@ -546,6 +550,30 @@ fn build_source_manifest_root(
         source_files: root_config.root_discovery.source_files,
         module,
     })
+}
+
+fn validate_top_level_source_manifest_crate_roots(source_files: &[String]) -> Result<(), String> {
+    let crate_roots = source_files
+        .iter()
+        .filter_map(|source_file| source_manifest_crate_root(source_file))
+        .collect::<BTreeSet<_>>();
+    if crate_roots.len() <= 1 {
+        return Ok(());
+    }
+
+    Err(format!(
+        "top-level root_discovery source_manifest must reference one crate root; found {}; use package.root_discovery source_manifest entries for workspace crates",
+        crate_roots.into_iter().collect::<Vec<_>>().join(", ")
+    ))
+}
+
+fn source_manifest_crate_root(source_file: &str) -> Option<String> {
+    if source_file.starts_with("src/") {
+        return Some(".".to_owned());
+    }
+    source_file
+        .split_once("/src/")
+        .map(|(root, _)| root.to_owned())
 }
 
 fn write_source_manifest_roots(
@@ -1494,6 +1522,69 @@ package = "sdk_dto"
     }
 
     #[test]
+    fn roots_command_writes_top_level_single_crate_workspace_manifest() {
+        let root = temp_project();
+        let config_path = write_top_level_workspace_source_manifest_project(&root);
+        let generated_roots = root.join("crates/core/src/generated/dto_roots.rs");
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        let code = run(
+            vec![
+                "roots".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert!(stdout.contains("dto_bindgen roots ok"));
+        let contents = std::fs::read_to_string(&generated_roots).unwrap();
+        assert!(contents.contains("crate::money::Money"));
+        assert!(contents.contains("crate::sdk::CoreProfile"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn roots_command_rejects_top_level_multi_crate_source_manifest_without_writing() {
+        let root = temp_project();
+        let config_path = write_top_level_multi_crate_source_manifest_project(&root);
+        let generated_dir = root.join("src/generated");
+        let generated_roots = generated_dir.join("dto_roots.rs");
+        std::fs::create_dir_all(&generated_dir).unwrap();
+        std::fs::write(&generated_roots, "old root module\n").unwrap();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        let code = run(
+            vec![
+                "roots".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 1);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("top-level root_discovery source_manifest"));
+        assert!(stderr.contains("package.root_discovery"));
+        assert!(stderr.contains("crates/core"));
+        assert!(stderr.contains("crates/events"));
+        assert_eq!(
+            std::fs::read_to_string(&generated_roots).unwrap(),
+            "old root module\n"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn diagnostics_command_reports_current_source_manifest_json() {
         let root = temp_project();
         let config_path = write_source_manifest_project(&root);
@@ -1715,6 +1806,86 @@ out_dir = "packages/core-bindings/src/generated"
 mode = "source_manifest"
 source_files = ["crates/core/src/sdk.rs"]
 root_module_file = "crates/core/src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap();
+        config_path
+    }
+
+    fn write_top_level_workspace_source_manifest_project(root: &Path) -> PathBuf {
+        let src = root.join("crates/core/src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("sdk.rs"),
+            r#"
+#[derive(Dto)]
+#[dto(export)]
+struct CoreProfile {
+    id: String,
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("money.rs"),
+            r#"
+#[derive(Dto)]
+#[dto(export)]
+struct Money {
+    amount: String,
+}
+"#,
+        )
+        .unwrap();
+        let config_path = root.join("dto_bindgen.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/sdk.rs", "crates/core/src/money.rs"]
+root_module_file = "crates/core/src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap();
+        config_path
+    }
+
+    fn write_top_level_multi_crate_source_manifest_project(root: &Path) -> PathBuf {
+        let core_src = root.join("crates/core/src");
+        let events_src = root.join("crates/events/src");
+        std::fs::create_dir_all(&core_src).unwrap();
+        std::fs::create_dir_all(&events_src).unwrap();
+        std::fs::write(
+            core_src.join("sdk.rs"),
+            r#"
+#[derive(Dto)]
+#[dto(export)]
+struct CoreProfile {
+    id: String,
+}
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            events_src.join("sdk.rs"),
+            r#"
+#[derive(Dto)]
+#[dto(export)]
+struct EventProfile {
+    id: String,
+}
+"#,
+        )
+        .unwrap();
+        let config_path = root.join("dto_bindgen.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/sdk.rs", "crates/events/src/sdk.rs"]
+root_module_file = "src/generated/dto_roots.rs"
 "#,
         )
         .unwrap();
