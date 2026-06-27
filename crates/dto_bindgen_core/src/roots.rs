@@ -1,5 +1,5 @@
 use core::fmt;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Config, SourceInventory};
 
@@ -20,6 +20,17 @@ pub struct GeneratedRoot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RootModuleError {
     NoExportedRoots,
+    DuplicateSourceFile {
+        source_file: String,
+    },
+    DuplicateRootTypePath {
+        type_path: String,
+        first_source_file: String,
+        duplicate_source_file: String,
+    },
+    UnsupportedRootModulePath {
+        root_module_file: String,
+    },
     UnsupportedSourcePath {
         source_file: String,
     },
@@ -33,6 +44,7 @@ pub fn generate_root_module(
     config: &Config,
     inventories: &[SourceInventory],
 ) -> Result<GeneratedRootModule, RootModuleError> {
+    validate_root_module_path(&config.root_discovery.root_module_file)?;
     let roots = collect_generated_roots(inventories)?;
     let contents = render_root_module_contents(&roots);
 
@@ -47,17 +59,31 @@ fn collect_generated_roots(
     inventories: &[SourceInventory],
 ) -> Result<Vec<GeneratedRoot>, RootModuleError> {
     let mut roots = BTreeMap::<String, GeneratedRoot>::new();
+    let mut source_files = BTreeSet::<String>::new();
     for inventory in inventories {
+        if !source_files.insert(inventory.source_file.clone()) {
+            return Err(RootModuleError::DuplicateSourceFile {
+                source_file: inventory.source_file.clone(),
+            });
+        }
         let module_path = rust_module_path(&inventory.source_file)?;
         for item in inventory.exported_roots() {
             let type_path = root_type_path(&module_path, &item.rust_name);
-            roots
-                .entry(type_path.clone())
-                .or_insert_with(|| GeneratedRoot {
+            if let Some(first) = roots.get(&type_path) {
+                return Err(RootModuleError::DuplicateRootTypePath {
+                    type_path,
+                    first_source_file: first.source_file.clone(),
+                    duplicate_source_file: inventory.source_file.clone(),
+                });
+            }
+            roots.insert(
+                type_path.clone(),
+                GeneratedRoot {
                     rust_name: item.rust_name.clone(),
                     type_path,
                     source_file: inventory.source_file.clone(),
-                });
+                },
+            );
         }
     }
 
@@ -66,6 +92,29 @@ fn collect_generated_roots(
     }
 
     Ok(roots.into_values().collect())
+}
+
+fn validate_root_module_path(root_module_file: &str) -> Result<(), RootModuleError> {
+    let valid = !root_module_file.is_empty()
+        && root_module_file.ends_with(".rs")
+        && !root_module_file.starts_with('/')
+        && !has_windows_drive_prefix(root_module_file)
+        && !root_module_file.contains('\\')
+        && root_module_file
+            .split('/')
+            .all(|segment| !matches!(segment, "" | "." | ".."));
+    if valid {
+        Ok(())
+    } else {
+        Err(RootModuleError::UnsupportedRootModulePath {
+            root_module_file: root_module_file.to_owned(),
+        })
+    }
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn render_root_module_contents(roots: &[GeneratedRoot]) -> String {
@@ -150,12 +199,86 @@ fn is_valid_module_segment(segment: &str) -> bool {
     };
     (first == '_' || first.is_ascii_alphabetic())
         && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+        && !is_rust_keyword(segment)
+}
+
+fn is_rust_keyword(segment: &str) -> bool {
+    matches!(
+        segment,
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "try"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+            | "gen"
+    )
 }
 
 impl fmt::Display for RootModuleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoExportedRoots => f.write_str("source manifest did not contain any dto roots"),
+            Self::DuplicateSourceFile { source_file } => write!(
+                f,
+                "source file `{source_file}` appears more than once in root manifest"
+            ),
+            Self::DuplicateRootTypePath {
+                type_path,
+                first_source_file,
+                duplicate_source_file,
+            } => write!(
+                f,
+                "root type path `{type_path}` is exported from both `{first_source_file}` and `{duplicate_source_file}`"
+            ),
+            Self::UnsupportedRootModulePath { root_module_file } => write!(
+                f,
+                "root module file `{root_module_file}` must be a relative .rs path"
+            ),
             Self::UnsupportedSourcePath { source_file } => write!(
                 f,
                 "source file `{source_file}` cannot be mapped to a Rust module path"
@@ -249,6 +372,150 @@ mod tests {
         let module = generate_root_module(&config(), &[inventory]).unwrap();
 
         assert_eq!(module.roots[0].type_path, "crate::money::RadrootsCoreMoney");
+    }
+
+    #[test]
+    fn rejects_invalid_root_module_paths() {
+        let inventory = scan_rust_source(
+            "src/sdk.rs",
+            r#"
+            #[derive(Dto)]
+            #[dto(export)]
+            struct UserProfile {
+                id: String,
+            }
+            "#,
+        )
+        .unwrap();
+        for root_module_file in [
+            "src/generated/dto_roots.txt",
+            "/tmp/dto_roots.rs",
+            "../dto_roots.rs",
+            "src\\generated\\dto_roots.rs",
+            "C:/dto_roots.rs",
+        ] {
+            let mut config = config();
+            config.root_discovery.root_module_file = root_module_file.to_owned();
+
+            let err = generate_root_module(&config, &[inventory.clone()]).unwrap_err();
+
+            assert_eq!(
+                err,
+                RootModuleError::UnsupportedRootModulePath {
+                    root_module_file: root_module_file.to_owned()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_source_files() {
+        let inventory = scan_rust_source(
+            "src/sdk.rs",
+            r#"
+            #[derive(Dto)]
+            #[dto(export)]
+            struct UserProfile {
+                id: String,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = generate_root_module(&config(), &[inventory.clone(), inventory]).unwrap_err();
+
+        assert_eq!(
+            err,
+            RootModuleError::DuplicateSourceFile {
+                source_file: "src/sdk.rs".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_generated_type_paths() {
+        let first = scan_rust_source(
+            "src/user.rs",
+            r#"
+            #[derive(Dto)]
+            #[dto(export)]
+            struct User {
+                id: String,
+            }
+            "#,
+        )
+        .unwrap();
+        let duplicate = scan_rust_source(
+            "src/user/mod.rs",
+            r#"
+            #[derive(Dto)]
+            #[dto(export)]
+            struct User {
+                id: String,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = generate_root_module(&config(), &[first, duplicate]).unwrap_err();
+
+        assert_eq!(
+            err,
+            RootModuleError::DuplicateRootTypePath {
+                type_path: "crate::user::User".to_owned(),
+                first_source_file: "src/user.rs".to_owned(),
+                duplicate_source_file: "src/user/mod.rs".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_keyword_module_segments() {
+        let inventory = scan_rust_source(
+            "src/type.rs",
+            r#"
+            #[derive(Dto)]
+            #[dto(export)]
+            struct KeywordPath {
+                id: String,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = generate_root_module(&config(), &[inventory]).unwrap_err();
+
+        assert_eq!(
+            err,
+            RootModuleError::InvalidModuleSegment {
+                source_file: "src/type.rs".to_owned(),
+                segment: "type".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_rust_source_paths() {
+        let inventory = scan_rust_source(
+            "src/sdk.txt",
+            r#"
+            #[derive(Dto)]
+            #[dto(export)]
+            struct UserProfile {
+                id: String,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let err = generate_root_module(&config(), &[inventory]).unwrap_err();
+
+        assert_eq!(
+            err,
+            RootModuleError::UnsupportedSourcePath {
+                source_file: "src/sdk.txt".to_owned()
+            }
+        );
     }
 
     #[test]
