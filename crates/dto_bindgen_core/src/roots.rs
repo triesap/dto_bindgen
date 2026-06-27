@@ -138,7 +138,7 @@ fn render_root_descriptor(type_path: &str) -> String {
     let single_line = format!("{prefix}{type_path}>(),\n");
     if single_line.trim_end().chars().count() <= 100 {
         single_line
-    } else if format!("{prefix}{type_path}>(").chars().count() <= 100 {
+    } else if format!("{prefix}{type_path}>(").chars().count() <= 102 {
         format!("{prefix}{type_path}>(\n        ),\n")
     } else {
         format!("{prefix}\n            {type_path},\n        >(),\n")
@@ -405,13 +405,13 @@ mod tests {
             generate_root_module(&config(), &[threshold, quantity_price, resource_cap]).unwrap();
 
         assert!(module.contents.contains(
-            "        ::dto_bindgen::export::RootDescriptor::new::<\n            crate::discount::RadrootsCoreDiscountThreshold,\n        >(),\n"
+            "        ::dto_bindgen::export::RootDescriptor::new::<crate::discount::RadrootsCoreDiscountThreshold>(\n        ),\n"
         ));
         assert!(module.contents.contains(
             "        ::dto_bindgen::export::RootDescriptor::new::<\n            crate::quantity_price::RadrootsCoreQuantityPrice,\n        >(),\n"
         ));
         assert!(module.contents.contains(
-            "        ::dto_bindgen::export::RootDescriptor::new::<\n            crate::resource_cap::RadrootsResourceHarvestCap,\n        >(),\n"
+            "        ::dto_bindgen::export::RootDescriptor::new::<crate::resource_cap::RadrootsResourceHarvestCap>(\n        ),\n"
         ));
     }
 
