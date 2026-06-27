@@ -43,12 +43,24 @@ fn expand_enum(
     data: DataEnum,
     container_attrs: EnumContainerAttrs,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    if container_attrs.dto_as == Some(DtoAsAttr::String) {
+        return Err(syn::Error::new_spanned(
+            ident,
+            "dto(as = \"string\") is supported only for structs and fields",
+        ));
+    }
     let enum_repr = enum_repr_tokens(&container_attrs, &data)?;
     let mut variant_tokens = Vec::new();
 
     for (variant_index, variant) in data.variants.into_iter().enumerate() {
         let variant_attrs = VariantAttrs::parse(&variant.attrs)?;
         let rust_name = variant.ident.to_string();
+        if container_attrs.dto_as == Some(DtoAsAttr::StringEnum) && variant_attrs.rename.is_none() {
+            return Err(syn::Error::new_spanned(
+                variant.ident,
+                "dto(as = \"string_enum\") requires #[dto(rename = \"...\")] on every variant",
+            ));
+        }
         let wire_name = variant_attrs
             .rename
             .unwrap_or_else(|| container_attrs.rename_variant(&rust_name));
@@ -128,10 +140,38 @@ fn expand_enum(
                 });
             }
             Fields::Unnamed(fields) => {
-                return Err(syn::Error::new_spanned(
-                    fields,
-                    "`Dto` derive does not support tuple enum variants",
-                ));
+                if !matches!(container_attrs.content, Some(_)) || fields.unnamed.len() != 1 {
+                    return Err(syn::Error::new_spanned(
+                        fields,
+                        "`Dto` derive supports only one-field adjacent tagged tuple variants",
+                    ));
+                }
+                let field = fields
+                    .unnamed
+                    .into_iter()
+                    .next()
+                    .expect("length already checked");
+                let field_attrs = FieldAttrs::parse(&field.attrs)?;
+                if field_attrs.skip {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "tuple variant payloads cannot be skipped",
+                    ));
+                }
+                let ty = field.ty;
+                let ty_expr = type_ref_expr_tokens(&ty, field_attrs.dto_as)?;
+
+                variant_tokens.push(quote! {
+                    let __dto_bindgen_variant_ty = #ty_expr;
+                    __dto_bindgen_def = __dto_bindgen_def.with_variant(
+                        ::dto_bindgen::__private::VariantDef::new(
+                            #rust_name,
+                            #wire_name,
+                            ::dto_bindgen::__private::VariantShape::Newtype(__dto_bindgen_variant_ty),
+                            ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
+                        ),
+                    );
+                });
             }
         }
     }
@@ -199,21 +239,31 @@ fn enum_repr_tokens(
         .iter()
         .any(|variant| matches!(variant.fields, Fields::Unnamed(_)));
 
-    if has_tuple {
+    if attrs.dto_as == Some(DtoAsAttr::StringEnum) {
+        if attrs.tag.is_some() || attrs.content.is_some() || has_struct || has_tuple {
+            return Err(syn::Error::new_spanned(
+                data.enum_token,
+                "dto(as = \"string_enum\") requires an untagged fieldless enum",
+            ));
+        }
+        return Ok(quote!(::dto_bindgen::__private::EnumRepr::External));
+    }
+
+    if has_tuple && attrs.content.is_none() {
         return Err(syn::Error::new_spanned(
             data.enum_token,
-            "`Dto` derive does not support tuple enum variants",
+            "`Dto` derive supports tuple variants only for adjacent tagged enums",
         ));
     }
 
-    if has_unit && has_struct {
+    if has_unit && has_struct && attrs.content.is_none() {
         return Err(syn::Error::new_spanned(
             data.enum_token,
-            "`Dto` derive does not support mixed unit and data enum variants",
+            "`Dto` derive supports mixed unit and data enum variants only for adjacent tagged enums",
         ));
     }
 
-    match (&attrs.tag, &attrs.content, has_struct) {
+    match (&attrs.tag, &attrs.content, has_struct || has_tuple) {
         (None, None, false) => Ok(quote!(::dto_bindgen::__private::EnumRepr::External)),
         (None, Some(_), _) => Err(syn::Error::new_spanned(
             data.enum_token,
@@ -244,6 +294,10 @@ fn expand_struct(
     fields: Fields,
     container_attrs: StructContainerAttrs,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    if container_attrs.dto_as == Some(DtoAsAttr::String) {
+        return Ok(expand_string_mapped_type(ident));
+    }
+
     let fields = match fields {
         Fields::Named(fields) => fields,
         other => {
@@ -253,6 +307,17 @@ fn expand_struct(
             ));
         }
     };
+
+    if container_attrs.dto_as == Some(DtoAsAttr::StringEnum) {
+        return Err(syn::Error::new_spanned(
+            ident,
+            "dto(as = \"string_enum\") is supported only for enums",
+        ));
+    }
+
+    if container_attrs.transparent {
+        return expand_transparent_struct(ident, fields);
+    }
 
     let mut field_tokens = Vec::new();
 
@@ -274,6 +339,7 @@ fn expand_struct(
             .rename
             .unwrap_or_else(|| container_attrs.rename_field(&rust_name));
         let ty = field.ty;
+        let dto_as = field_attrs.dto_as;
 
         let field_expr = field_def_tokens(
             &field_var,
@@ -284,8 +350,9 @@ fn expand_struct(
             field_attrs.default || container_attrs.default,
             field_attrs.skip_serializing_if,
         )?;
+        let field_ty_expr = type_ref_expr_tokens(&ty, dto_as)?;
         field_tokens.push(quote! {
-            let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
+            let #field_var = #field_ty_expr;
             __dto_bindgen_def = __dto_bindgen_def.with_field(#field_expr);
         });
     }
@@ -341,6 +408,54 @@ fn expand_struct(
     })
 }
 
+fn expand_string_mapped_type(ident: Ident) -> proc_macro2::TokenStream {
+    quote! {
+        impl ::dto_bindgen::Dto for #ident {
+            fn describe(
+                _ctx: &mut ::dto_bindgen::__private::DescribeCtx,
+            ) -> ::dto_bindgen::__private::TypeRef {
+                ::dto_bindgen::__private::TypeRef::String
+            }
+        }
+    }
+}
+
+fn expand_transparent_struct(
+    ident: Ident,
+    fields: syn::FieldsNamed,
+) -> syn::Result<proc_macro2::TokenStream> {
+    if fields.named.len() != 1 {
+        return Err(syn::Error::new_spanned(
+            fields,
+            "serde(transparent) DTO structs must have exactly one field",
+        ));
+    }
+    let field = fields
+        .named
+        .into_iter()
+        .next()
+        .expect("length already checked");
+    let field_attrs = FieldAttrs::parse(&field.attrs)?;
+    if field_attrs.skip {
+        return Err(syn::Error::new_spanned(
+            field,
+            "serde(transparent) DTO field cannot be skipped",
+        ));
+    }
+    let ty = field.ty;
+    let ty_expr = type_ref_expr_tokens(&ty, field_attrs.dto_as)?;
+
+    Ok(quote! {
+        impl ::dto_bindgen::Dto for #ident {
+            fn describe(
+                ctx: &mut ::dto_bindgen::__private::DescribeCtx,
+            ) -> ::dto_bindgen::__private::TypeRef {
+                #ty_expr
+            }
+        }
+    })
+}
+
 fn field_def_tokens(
     field_var: &Ident,
     rust_name: &str,
@@ -374,8 +489,11 @@ struct StructContainerAttrs {
     rename: Option<String>,
     rename_all: Option<String>,
     ts_name: Option<String>,
+    dto_as: Option<DtoAsAttr>,
+    export: bool,
     deny_unknown_fields: bool,
     default: bool,
+    transparent: bool,
 }
 
 impl StructContainerAttrs {
@@ -384,7 +502,12 @@ impl StructContainerAttrs {
 
         for attr in attrs {
             if attr.path().is_ident("dto") {
-                parse_dto_container_attr(attr, &mut parsed.ts_name)?;
+                parse_dto_container_attr(
+                    attr,
+                    &mut parsed.ts_name,
+                    &mut parsed.dto_as,
+                    &mut parsed.export,
+                )?;
                 continue;
             }
 
@@ -403,6 +526,9 @@ impl StructContainerAttrs {
                     Ok(())
                 } else if meta.path.is_ident("deny_unknown_fields") {
                     parsed.deny_unknown_fields = true;
+                    Ok(())
+                } else if meta.path.is_ident("transparent") {
+                    parsed.transparent = true;
                     Ok(())
                 } else if meta.path.is_ident("default") {
                     if meta.input.peek(Token![=]) {
@@ -437,6 +563,7 @@ struct FieldAttrs {
     default: bool,
     skip_serializing_if: Option<String>,
     int_repr: Option<IntReprAttr>,
+    dto_as: Option<DtoAsAttr>,
 }
 
 impl FieldAttrs {
@@ -448,6 +575,18 @@ impl FieldAttrs {
                 attr.parse_nested_meta(|meta| {
                     if meta.path.is_ident("skip") {
                         parsed.skip = true;
+                        Ok(())
+                    } else if meta.path.is_ident("as") {
+                        let dto_as = DtoAsAttr::parse(&parse_string_value(&meta)?, &meta)?;
+                        if dto_as != DtoAsAttr::String {
+                            return Err(meta
+                                .error("dto field as mapping supports only dto(as = \"string\")"));
+                        }
+                        parsed.dto_as = Some(dto_as);
+                        Ok(())
+                    } else if meta.path.is_ident("int") {
+                        parsed.int_repr =
+                            Some(IntReprAttr::parse(&parse_string_value(&meta)?, &meta)?);
                         Ok(())
                     } else if meta.path.is_ident("int_repr") {
                         parsed.int_repr =
@@ -505,6 +644,20 @@ impl FieldAttrs {
         }
 
         Ok(parsed)
+    }
+}
+
+fn type_ref_expr_tokens(
+    ty: &Type,
+    dto_as: Option<DtoAsAttr>,
+) -> syn::Result<proc_macro2::TokenStream> {
+    match dto_as {
+        Some(DtoAsAttr::String) => Ok(quote!(::dto_bindgen::__private::TypeRef::String)),
+        Some(DtoAsAttr::StringEnum) => Err(syn::Error::new_spanned(
+            ty,
+            "dto(as = \"string_enum\") is supported only for enum containers",
+        )),
+        None => Ok(quote!(<#ty as ::dto_bindgen::Dto>::describe(ctx))),
     }
 }
 
@@ -607,6 +760,8 @@ struct EnumContainerAttrs {
     rename_all: Option<String>,
     rename_all_fields: Option<String>,
     ts_name: Option<String>,
+    dto_as: Option<DtoAsAttr>,
+    export: bool,
     tag: Option<String>,
     content: Option<String>,
 }
@@ -617,7 +772,12 @@ impl EnumContainerAttrs {
 
         for attr in attrs {
             if attr.path().is_ident("dto") {
-                parse_dto_container_attr(attr, &mut parsed.ts_name)?;
+                parse_dto_container_attr(
+                    attr,
+                    &mut parsed.ts_name,
+                    &mut parsed.dto_as,
+                    &mut parsed.export,
+                )?;
                 continue;
             }
 
@@ -680,10 +840,15 @@ impl VariantAttrs {
 
         for attr in attrs {
             if attr.path().is_ident("dto") {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "`Dto` derive does not support dto variant attributes in this slice yet",
-                ));
+                attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("rename") {
+                        parsed.rename = Some(parse_string_value(&meta)?);
+                        Ok(())
+                    } else {
+                        Err(meta.error("unsupported dto variant attribute for `Dto` derive"))
+                    }
+                })?;
+                continue;
             }
 
             if !attr.path().is_ident("serde") {
@@ -704,7 +869,28 @@ impl VariantAttrs {
     }
 }
 
-fn parse_dto_container_attr(attr: &Attribute, ts_name: &mut Option<String>) -> syn::Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DtoAsAttr {
+    String,
+    StringEnum,
+}
+
+impl DtoAsAttr {
+    fn parse(value: &str, meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Self> {
+        match value {
+            "string" => Ok(Self::String),
+            "string_enum" => Ok(Self::StringEnum),
+            _ => Err(meta.error("unsupported dto as mapping")),
+        }
+    }
+}
+
+fn parse_dto_container_attr(
+    attr: &Attribute,
+    ts_name: &mut Option<String>,
+    dto_as: &mut Option<DtoAsAttr>,
+    export: &mut bool,
+) -> syn::Result<()> {
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("ts") {
             meta.parse_nested_meta(|meta| {
@@ -715,6 +901,15 @@ fn parse_dto_container_attr(attr: &Attribute, ts_name: &mut Option<String>) -> s
                     Err(meta.error("unsupported dto ts container attribute for `Dto` derive"))
                 }
             })
+        } else if meta.path.is_ident("as") {
+            *dto_as = Some(DtoAsAttr::parse(&parse_string_value(&meta)?, &meta)?);
+            Ok(())
+        } else if meta.path.is_ident("export") {
+            if !meta.input.is_empty() {
+                return Err(meta.error("dto(export) does not accept arguments"));
+            }
+            *export = true;
+            Ok(())
         } else {
             Err(meta.error("unsupported dto container attribute for `Dto` derive"))
         }
@@ -927,6 +1122,157 @@ mod tests {
             err.to_string()
                 .contains("unsupported dto container attribute")
         );
+    }
+
+    #[test]
+    fn accepts_dto_export_container_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[dto(export)]
+            struct UserProfile {
+                id: String,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand");
+
+        assert!(tokens.to_string().contains("UserProfile"));
+    }
+
+    #[test]
+    fn rejects_dto_export_arguments() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[dto(export = true)]
+            struct UserProfile {
+                id: String,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("dto(export) does not accept"));
+    }
+
+    #[test]
+    fn supports_type_level_string_mapping() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[dto(as = "string")]
+            struct Decimal(String);
+        };
+
+        let tokens = expand_dto(input).expect("expand");
+        let tokens = tokens.to_string();
+
+        assert!(tokens.contains("TypeRef :: String"));
+        assert!(!tokens.contains("StructDef"));
+    }
+
+    #[test]
+    fn supports_field_level_string_mapping() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Price {
+                #[dto(as = "string")]
+                amount: Decimal,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("TypeRef :: String"));
+        assert!(!tokens.contains("< Decimal as :: dto_bindgen :: Dto >"));
+    }
+
+    #[test]
+    fn supports_string_enum_mapping_with_dto_variant_renames() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[dto(as = "string_enum")]
+            enum Unit {
+                #[dto(rename = "kg")]
+                Kilogram,
+                #[dto(rename = "lb")]
+                Pound,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("\"kg\""));
+        assert!(tokens.contains("\"lb\""));
+        assert!(tokens.contains("EnumRepr :: External"));
+    }
+
+    #[test]
+    fn rejects_string_enum_variants_without_explicit_renames() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[dto(as = "string_enum")]
+            enum Unit {
+                Kilogram,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("requires #[dto(rename"));
+    }
+
+    #[test]
+    fn supports_transparent_one_field_structs() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[serde(transparent)]
+            struct UserId {
+                value: String,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("< String as :: dto_bindgen :: Dto >"));
+        assert!(!tokens.contains("StructDef"));
+    }
+
+    #[test]
+    fn rejects_invalid_transparent_structs() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[serde(transparent)]
+            struct UserId {
+                value: String,
+                other: String,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("exactly one field"));
+    }
+
+    #[test]
+    fn derives_adjacent_newtype_variants() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[serde(tag = "kind", content = "amount")]
+            enum DiscountValue {
+                Fixed(Decimal),
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("VariantShape :: Newtype"));
+        assert!(tokens.contains("EnumRepr :: Adjacent"));
+    }
+
+    #[test]
+    fn derives_mixed_adjacent_unit_and_struct_variants() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[serde(tag = "kind", content = "payload")]
+            enum Delivery {
+                Pickup,
+                Shipping { address: String },
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("VariantShape :: Unit"));
+        assert!(tokens.contains("VariantShape :: Struct"));
     }
 
     #[test]
