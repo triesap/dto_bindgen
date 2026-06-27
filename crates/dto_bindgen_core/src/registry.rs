@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 use crate::{
     BackendId, Diagnostic, FieldPresence, GeneratedFileId, Namespace, RustTypeId, TargetTypeName,
@@ -17,6 +18,39 @@ pub struct Registry {
     pub roots: BTreeSet<TypeId>,
     pub diagnostics: Vec<Diagnostic>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryLookupError {
+    MissingExportName {
+        export_name: String,
+    },
+    DuplicateExportName {
+        export_name: String,
+        type_ids: Vec<TypeId>,
+    },
+}
+
+impl fmt::Display for RegistryLookupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingExportName { export_name } => {
+                write!(f, "no DTO type exports `{export_name}`")
+            }
+            Self::DuplicateExportName {
+                export_name,
+                type_ids,
+            } => {
+                write!(
+                    f,
+                    "DTO export name `{export_name}` is ambiguous across {} types",
+                    type_ids.len()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RegistryLookupError {}
 
 impl Registry {
     pub fn new() -> Self {
@@ -52,6 +86,42 @@ impl Registry {
             TypeDef::Struct(def) => def.rust_name.as_str(),
             TypeDef::Enum(def) => def.rust_name.as_str(),
         })
+    }
+
+    pub fn type_id_by_export_name(&self, export_name: &str) -> Result<TypeId, RegistryLookupError> {
+        let type_ids = self
+            .types_by_id
+            .iter()
+            .filter_map(|(type_id, def)| {
+                if type_export_name(def) == export_name {
+                    Some(*type_id)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        match type_ids.as_slice() {
+            [type_id] => Ok(*type_id),
+            [] => Err(RegistryLookupError::MissingExportName {
+                export_name: export_name.to_owned(),
+            }),
+            _ => Err(RegistryLookupError::DuplicateExportName {
+                export_name: export_name.to_owned(),
+                type_ids,
+            }),
+        }
+    }
+
+    pub fn type_def_by_export_name(
+        &self,
+        export_name: &str,
+    ) -> Result<(TypeId, &TypeDef), RegistryLookupError> {
+        let type_id = self.type_id_by_export_name(export_name)?;
+        let type_def = self
+            .type_def(type_id)
+            .expect("type ids returned by registry lookup are present");
+        Ok((type_id, type_def))
     }
 
     pub fn struct_field_presence(
@@ -146,6 +216,13 @@ impl Registry {
     }
 }
 
+fn type_export_name(def: &TypeDef) -> &str {
+    match def {
+        TypeDef::Struct(def) => def.export_name.as_str(),
+        TypeDef::Enum(def) => def.export_name.as_str(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +276,54 @@ mod tests {
         assert!(presence.nullable);
         assert!(!presence.required_on_deserialize);
         assert_eq!(registry.struct_field_presence("SdkEvent", "nickname"), None);
+    }
+
+    #[test]
+    fn resolves_unique_export_name_to_type_id_and_def() {
+        let mut registry = Registry::new();
+        let user =
+            registry.register_type(RustTypeId::new("sdk", "sdk", "User"), struct_type("User"));
+        registry.register_type(RustTypeId::new("sdk", "sdk", "Event"), enum_type("Event"));
+
+        assert_eq!(registry.type_id_by_export_name("User"), Ok(user));
+        let (type_id, type_def) = registry
+            .type_def_by_export_name("User")
+            .expect("unique export resolves");
+        assert_eq!(type_id, user);
+        assert_eq!(type_export_name(type_def), "User");
+    }
+
+    #[test]
+    fn reports_missing_export_name_lookup() {
+        let registry = Registry::new();
+
+        assert_eq!(
+            registry.type_id_by_export_name("Missing"),
+            Err(RegistryLookupError::MissingExportName {
+                export_name: "Missing".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn reports_duplicate_export_name_lookup() {
+        let mut registry = Registry::new();
+        let first = registry.register_type(
+            RustTypeId::new("sdk", "sdk", "First"),
+            struct_type("Duplicate"),
+        );
+        let second = registry.register_type(
+            RustTypeId::new("sdk", "sdk", "Second"),
+            enum_type("Duplicate"),
+        );
+
+        assert_eq!(
+            registry.type_id_by_export_name("Duplicate"),
+            Err(RegistryLookupError::DuplicateExportName {
+                export_name: "Duplicate".to_owned(),
+                type_ids: vec![first, second]
+            })
+        );
     }
 
     #[test]

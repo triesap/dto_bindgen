@@ -56,7 +56,7 @@ pub use inventory::{
     InventoryTypeClass, InventoryTypesReport, InventoryVariant, PromotionDecision, SourceInventory,
     build_inventory_report, render_inventory_json, render_inventory_markdown, scan_rust_source,
 };
-pub use registry::Registry;
+pub use registry::{Registry, RegistryLookupError};
 pub use roots::{GeneratedRoot, GeneratedRootModule, RootModuleError, generate_root_module};
 pub use source::{SourceFile, SourcePosition, SourceSpan};
 pub use types::{BytesRepr, Primitive, TargetOverride, TypeRef};

@@ -46,6 +46,11 @@ impl RustTypeId {
         }
     }
 
+    pub fn package_local(package_name: impl Into<String>, rust_ident: impl Into<String>) -> Self {
+        let package_name = package_name.into();
+        Self::new(package_name.clone(), package_name, rust_ident)
+    }
+
     pub fn with_module_path(mut self, module_path: impl IntoIterator<Item = String>) -> Self {
         self.module_path = module_path.into_iter().collect();
         self
@@ -273,6 +278,17 @@ mod tests {
             rust_id.to_string(),
             "radroots-sdk:radroots_sdk::types::identity::UserProfile<T>"
         );
+    }
+
+    #[test]
+    fn constructs_package_local_identity() {
+        let rust_id = RustTypeId::package_local("sdk_bindings", "UserProfile");
+
+        assert_eq!(rust_id.package_name, "sdk_bindings");
+        assert_eq!(rust_id.crate_name, "sdk_bindings");
+        assert!(rust_id.module_path.is_empty());
+        assert_eq!(rust_id.rust_ident, "UserProfile");
+        assert!(rust_id.generic_parameters.is_empty());
     }
 
     #[test]
