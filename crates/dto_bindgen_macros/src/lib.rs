@@ -82,13 +82,6 @@ fn expand_enum(
                 });
             }
             Fields::Named(fields) => {
-                if container_attrs.tag.is_none() {
-                    return Err(syn::Error::new_spanned(
-                        fields,
-                        "externally tagged data enums are not supported in the MVP",
-                    ));
-                }
-
                 let variant_fields_var =
                     format_ident!("__dto_bindgen_variant_fields_{variant_index}");
                 let mut field_tokens = Vec::new();
@@ -151,10 +144,16 @@ fn expand_enum(
                 });
             }
             Fields::Unnamed(fields) => {
-                if container_attrs.content.is_none() || fields.unnamed.len() != 1 {
+                if fields.unnamed.len() != 1 {
                     return Err(syn::Error::new_spanned(
                         fields,
-                        "`Dto` derive supports only one-field adjacent tagged tuple variants",
+                        "`Dto` derive supports only one-field newtype enum variants",
+                    ));
+                }
+                if container_attrs.tag.is_some() && container_attrs.content.is_none() {
+                    return Err(syn::Error::new_spanned(
+                        fields,
+                        "`Dto` derive does not support internally tagged tuple variants",
                     ));
                 }
                 let field = fields
@@ -242,10 +241,6 @@ fn enum_repr_tokens(
     attrs: &EnumContainerAttrs,
     data: &DataEnum,
 ) -> syn::Result<proc_macro2::TokenStream> {
-    let has_unit = data
-        .variants
-        .iter()
-        .any(|variant| matches!(variant.fields, Fields::Unit));
     let has_struct = data
         .variants
         .iter()
@@ -265,17 +260,10 @@ fn enum_repr_tokens(
         return Ok(quote!(::dto_bindgen::__private::EnumRepr::External));
     }
 
-    if has_tuple && attrs.content.is_none() {
+    if has_tuple && attrs.tag.is_some() && attrs.content.is_none() {
         return Err(syn::Error::new_spanned(
             data.enum_token,
-            "`Dto` derive supports tuple variants only for adjacent tagged enums",
-        ));
-    }
-
-    if has_unit && has_struct && attrs.content.is_none() {
-        return Err(syn::Error::new_spanned(
-            data.enum_token,
-            "`Dto` derive supports mixed unit and data enum variants only for adjacent tagged enums",
+            "`Dto` derive does not support internally tagged tuple variants",
         ));
     }
 
@@ -289,10 +277,7 @@ fn enum_repr_tokens(
             data.enum_token,
             "tagged fieldless enums are not supported in the MVP",
         )),
-        (None, None, true) => Err(syn::Error::new_spanned(
-            data.enum_token,
-            "externally tagged data enums are not supported in the MVP",
-        )),
+        (None, None, true) => Ok(quote!(::dto_bindgen::__private::EnumRepr::External)),
         (Some(tag), None, true) => Ok(quote!(::dto_bindgen::__private::EnumRepr::Internal {
             tag: #tag.to_owned(),
         })),
@@ -852,10 +837,7 @@ fn default_kind_tokens(ty: &Type) -> syn::Result<proc_macro2::TokenStream> {
         "bool" => Ok(quote!(::dto_bindgen::__private::DefaultKind::BoolFalse)),
         "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "i128" | "u128" | "isize"
         | "usize" | "f32" | "f64" => Ok(quote!(::dto_bindgen::__private::DefaultKind::NumericZero)),
-        _ => Err(syn::Error::new_spanned(
-            ty,
-            "serde(default) is supported only for Option, String, bool, numeric, Vec, and string-keyed map fields",
-        )),
+        _ => Ok(quote!(::dto_bindgen::__private::DefaultKind::DefaultValue)),
     }
 }
 
@@ -1126,7 +1108,7 @@ fn apply_rename_rule(rule: &str, rust_name: &str) -> String {
         "SCREAMING_SNAKE_CASE" => to_screaming_snake_case(rust_name),
         "lowercase" => rust_name.to_lowercase(),
         "kebab-case" => to_kebab_case(rust_name),
-        "snake_case" => rust_name.to_owned(),
+        "snake_case" => to_snake_case(rust_name),
         _ => rust_name.to_owned(),
     }
 }
@@ -1198,6 +1180,10 @@ fn to_kebab_case(value: &str) -> String {
         .replace('_', "-")
 }
 
+fn to_snake_case(value: &str) -> String {
+    to_screaming_snake_case(value).to_lowercase()
+}
+
 fn option_string_tokens(value: Option<&str>) -> proc_macro2::TokenStream {
     match value {
         Some(value) => quote!(::std::option::Option::Some(#value.to_owned())),
@@ -1253,6 +1239,8 @@ mod tests {
             "static-json"
         );
         assert_eq!(apply_rename_rule("snake_case", "user_id"), "user_id");
+        assert_eq!(apply_rename_rule("snake_case", "Accepted"), "accepted");
+        assert_eq!(apply_rename_rule("snake_case", "GuestUser"), "guest_user");
     }
 
     #[test]
@@ -1608,6 +1596,42 @@ mod tests {
     }
 
     #[test]
+    fn derives_external_newtype_and_struct_variants() {
+        let input: DeriveInput = syn::parse_quote! {
+            enum ListingParseError {
+                InvalidKind(u32),
+                MissingTag(String),
+                InvalidUnit,
+                InvalidData { reason: String },
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("EnumRepr :: External"));
+        assert!(tokens.contains("VariantShape :: Newtype"));
+        assert!(tokens.contains("VariantShape :: Struct"));
+        assert!(tokens.contains("VariantShape :: Unit"));
+    }
+
+    #[test]
+    fn derives_mixed_internal_unit_and_struct_variants() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[serde(tag = "decision", rename_all = "snake_case")]
+            enum RevisionOutcome {
+                Accepted,
+                Declined { reason: String },
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("EnumRepr :: Internal"));
+        assert!(tokens.contains("VariantShape :: Unit"));
+        assert!(tokens.contains("VariantShape :: Struct"));
+    }
+
+    #[test]
     fn derives_mixed_adjacent_unit_and_struct_variants() {
         let input: DeriveInput = syn::parse_quote! {
             #[serde(tag = "kind", content = "payload")]
@@ -1766,7 +1790,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_default_for_unmapped_field_types() {
+    fn accepts_default_for_named_field_types() {
         let input: DeriveInput = syn::parse_quote! {
             struct Metadata {
                 #[serde(default)]
@@ -1774,9 +1798,9 @@ mod tests {
             }
         };
 
-        let err = expand_dto(input).unwrap_err();
+        let tokens = expand_dto(input).expect("expand").to_string();
 
-        assert!(err.to_string().contains("serde(default) is supported only"));
+        assert!(tokens.contains("DefaultKind :: DefaultValue"));
     }
 
     #[test]
@@ -1850,15 +1874,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_enum_data_variants() {
+    fn rejects_internally_tagged_newtype_variants() {
         let input: DeriveInput = syn::parse_quote! {
+            #[serde(tag = "kind")]
             enum Event {
-                UserCreated { user_id: String },
+                UserCreated(String),
             }
         };
 
         let err = expand_dto(input).unwrap_err();
 
-        assert!(err.to_string().contains("externally tagged data enums"));
+        assert!(err.to_string().contains("internally tagged tuple variants"));
     }
 }

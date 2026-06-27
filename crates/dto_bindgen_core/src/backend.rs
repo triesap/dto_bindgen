@@ -95,6 +95,9 @@ impl BackendCapabilities {
             backend: BackendId::TypeScript,
             enum_shapes: EnumShapeCapabilities {
                 external_unit: true,
+                external_struct: true,
+                external_newtype: true,
+                internal_unit: true,
                 internal_struct: true,
                 adjacent_struct: true,
                 adjacent_newtype: true,
@@ -198,6 +201,9 @@ mod tests {
 
         assert_eq!(capabilities.backend, BackendId::TypeScript);
         assert!(capabilities.enum_shapes.external_unit);
+        assert!(capabilities.enum_shapes.external_struct);
+        assert!(capabilities.enum_shapes.external_newtype);
+        assert!(capabilities.enum_shapes.internal_unit);
         assert!(capabilities.enum_shapes.internal_struct);
         assert!(capabilities.enum_shapes.adjacent_struct);
         assert!(capabilities.enum_shapes.adjacent_newtype);

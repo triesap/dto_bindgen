@@ -188,6 +188,7 @@ impl FieldContract {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DefaultKind {
     NoneValue,
+    DefaultValue,
     EmptyString,
     EmptyVec,
     EmptyMap,

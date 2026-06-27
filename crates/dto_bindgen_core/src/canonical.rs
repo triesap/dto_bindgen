@@ -370,6 +370,7 @@ impl CanonicalFieldContract {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum CanonicalDefaultKind {
     NoneValue,
+    DefaultValue,
     EmptyString,
     EmptyVec,
     EmptyMap,
@@ -382,6 +383,7 @@ impl CanonicalDefaultKind {
     fn from_default_kind(default: &DefaultKind) -> Self {
         match default {
             DefaultKind::NoneValue => Self::NoneValue,
+            DefaultKind::DefaultValue => Self::DefaultValue,
             DefaultKind::EmptyString => Self::EmptyString,
             DefaultKind::EmptyVec => Self::EmptyVec,
             DefaultKind::EmptyMap => Self::EmptyMap,

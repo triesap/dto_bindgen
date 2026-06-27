@@ -82,6 +82,8 @@ struct FieldOverrideManifest {
 struct PresenceDefaults {
     display_name: Option<String>,
     #[serde(default)]
+    address: PostalAddress,
+    #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
     active: bool,
@@ -96,6 +98,23 @@ struct PresenceDefaults {
 struct SkipNonePatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     display_name: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Dto)]
+enum ExternalDataError {
+    InvalidKind(u32),
+    MissingTag(String),
+    InvalidUnit,
+    InvalidData { reason: String },
+}
+
+#[allow(dead_code)]
+#[derive(Dto)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+enum RevisionOutcome {
+    Accepted,
+    Declined { reason: String },
 }
 
 #[test]
@@ -370,6 +389,13 @@ fn derives_option_and_builtin_default_presence() {
         Some(dto_bindgen::__private::DefaultKind::NoneValue)
     );
 
+    let address = struct_field(def, "address").unwrap();
+    assert!(!address.presence.required_on_deserialize);
+    assert_eq!(
+        address.presence.default,
+        Some(dto_bindgen::__private::DefaultKind::DefaultValue)
+    );
+
     let tags = struct_field(def, "tags").unwrap();
     assert!(!tags.presence.required_on_deserialize);
     assert_eq!(
@@ -394,6 +420,90 @@ fn derives_option_and_builtin_default_presence() {
         note.presence.default,
         Some(dto_bindgen::__private::DefaultKind::EmptyString)
     );
+}
+
+#[test]
+fn derives_external_data_enum_descriptors() {
+    let registry = export::build_registry([export::RootDescriptor::new::<ExternalDataError>()]);
+
+    assert!(registry.diagnostics.is_empty());
+    let root = *registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Enum(def) = registry.type_def(root).unwrap() else {
+        panic!("expected enum root");
+    };
+
+    assert!(matches!(
+        def.repr,
+        dto_bindgen::__private::EnumRepr::External
+    ));
+    assert!(matches!(
+        variant_shape(def, "InvalidKind"),
+        Some(dto_bindgen::__private::VariantShape::Newtype(_))
+    ));
+    assert!(matches!(
+        variant_shape(def, "MissingTag"),
+        Some(dto_bindgen::__private::VariantShape::Newtype(_))
+    ));
+    assert!(matches!(
+        variant_shape(def, "InvalidUnit"),
+        Some(dto_bindgen::__private::VariantShape::Unit)
+    ));
+    assert_eq!(
+        variant_field_wire_name(def, "InvalidData", "reason"),
+        Some("reason")
+    );
+}
+
+#[test]
+fn derives_internal_unit_and_struct_enum_descriptors() {
+    let registry = export::build_registry([export::RootDescriptor::new::<RevisionOutcome>()]);
+
+    assert!(registry.diagnostics.is_empty());
+    let root = *registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Enum(def) = registry.type_def(root).unwrap() else {
+        panic!("expected enum root");
+    };
+    let dto_bindgen::__private::EnumRepr::Internal { tag } = &def.repr else {
+        panic!("expected internal enum repr");
+    };
+
+    assert_eq!(tag, "decision");
+    assert_eq!(variant_wire_name(def, "Accepted"), Some("accepted"));
+    assert!(matches!(
+        variant_shape(def, "Accepted"),
+        Some(dto_bindgen::__private::VariantShape::Unit)
+    ));
+    assert_eq!(variant_wire_name(def, "Declined"), Some("declined"));
+    assert_eq!(
+        variant_field_wire_name(def, "Declined", "reason"),
+        Some("reason")
+    );
+}
+
+#[test]
+fn export_types_macro_renders_required_enum_shapes_for_typescript() {
+    let config_path = temp_config(
+        r#"
+[python]
+enabled = false
+"#,
+    );
+
+    dto_bindgen::export_types!(
+        config = config_path.as_path(),
+        roots = [ExternalDataError, RevisionOutcome],
+    )
+    .unwrap();
+
+    let generated = config_path.parent().unwrap().join("generated/ts/types.ts");
+    let contents = std::fs::read_to_string(generated).unwrap();
+    assert!(contents.contains("InvalidKind: number;"));
+    assert!(contents.contains("| \"InvalidUnit\""));
+    assert!(contents.contains("decision: \"accepted\";"));
+    assert!(contents.contains("decision: \"declined\";"));
+    assert!(contents.contains("reason: string;"));
+
+    cleanup_config(&config_path);
 }
 
 #[test]
@@ -437,6 +547,16 @@ fn export_types_macro_returns_blocking_diagnostics() {
     );
 
     cleanup_config(&config_path);
+}
+
+fn variant_shape<'a>(
+    def: &'a dto_bindgen::__private::EnumDef,
+    name: &str,
+) -> Option<&'a dto_bindgen::__private::VariantShape> {
+    def.variants
+        .iter()
+        .find(|variant| variant.rust_name == name)
+        .map(|variant| &variant.shape)
 }
 
 fn temp_config(contents: &str) -> std::path::PathBuf {

@@ -32,7 +32,9 @@ impl Backend for PythonBackend {
         if !config.python.enabled {
             return Vec::new();
         }
-        validate_registry_for_backend(registry, config, &self.capabilities())
+        let mut diagnostics = validate_registry_for_backend(registry, config, &self.capabilities());
+        diagnostics.extend(validate_default_values(registry));
+        diagnostics
     }
 
     fn render(
@@ -42,6 +44,11 @@ impl Backend for PythonBackend {
     ) -> Result<GeneratedFileSet, BackendError> {
         if !config.python.enabled {
             return Ok(GeneratedFileSet::empty());
+        }
+
+        let diagnostics = validate_default_values(registry);
+        if !diagnostics.is_empty() {
+            return Err(BackendError::new(BackendId::Python, diagnostics));
         }
 
         let mut files = Vec::new();
@@ -153,6 +160,64 @@ fn render_type_file(
     }
 
     Ok(output)
+}
+
+fn validate_default_values(registry: &Registry) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for type_def in registry.types_by_id.values() {
+        match type_def {
+            TypeDef::Struct(def) => {
+                validate_default_value_fields(
+                    &def.export_name,
+                    None,
+                    &def.fields,
+                    &mut diagnostics,
+                );
+            }
+            TypeDef::Enum(def) => {
+                for variant in &def.variants {
+                    if let VariantShape::Struct(fields) = &variant.shape {
+                        validate_default_value_fields(
+                            &def.export_name,
+                            Some(variant.rust_name.as_str()),
+                            fields,
+                            &mut diagnostics,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    diagnostics
+}
+
+fn validate_default_value_fields(
+    type_name: &str,
+    variant_name: Option<&str>,
+    fields: &[FieldDef],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for field in fields {
+        if !matches!(field.contract().default, Some(DefaultKind::DefaultValue)) {
+            continue;
+        }
+
+        let diagnostic = Diagnostic::error(
+            DiagnosticCode::new(610),
+            "Python backend does not support plain serde(default) DTO defaults",
+        )
+        .with_type(type_name.to_owned())
+        .with_field(field.rust_name.to_string())
+        .with_backend(BackendId::Python);
+
+        diagnostics.push(if let Some(variant_name) = variant_name {
+            diagnostic.with_variant(variant_name.to_owned())
+        } else {
+            diagnostic
+        });
+    }
 }
 
 fn render_struct(
@@ -469,6 +534,7 @@ fn field_call(field: &FieldDef) -> String {
         Some(DefaultKind::EmptyMap) => format!("field(default_factory=dict, {metadata})"),
         Some(DefaultKind::BoolFalse) => format!("field(default=False, {metadata})"),
         Some(DefaultKind::NumericZero) => format!("field(default=0, {metadata})"),
+        Some(DefaultKind::DefaultValue) => format!("field({metadata})"),
         Some(DefaultKind::CustomPath(_)) => format!("field({metadata})"),
     }
 }
@@ -487,6 +553,7 @@ fn field_access_expr(field: &FieldDef, source: &str) -> String {
         Some(DefaultKind::EmptyMap) => format!("{source}.get(\"{wire_name}\", {{}})"),
         Some(DefaultKind::BoolFalse) => format!("{source}.get(\"{wire_name}\", False)"),
         Some(DefaultKind::NumericZero) => format!("{source}.get(\"{wire_name}\", 0)"),
+        Some(DefaultKind::DefaultValue) => format!("{source}.get(\"{wire_name}\")"),
         Some(DefaultKind::CustomPath(_)) => format!("{source}.get(\"{wire_name}\")"),
     }
 }
@@ -934,6 +1001,23 @@ mod tests {
         );
         assert!(errors.contents().contains("class DtoParseError"));
         assert!(find_file(&files, "py.typed").contents().is_empty());
+    }
+
+    #[test]
+    fn rejects_plain_default_value_defaults() {
+        let def = TypeDef::Struct(
+            dto_bindgen_core::StructDef::new("Profile", "Profile", span()).with_field(
+                field("address", "address", TypeRef::String)
+                    .with_presence(FieldPresence::defaulted(DefaultKind::DefaultValue)),
+            ),
+        );
+        let mut registry = Registry::new();
+        registry.register_type(RustTypeId::new("sdk", "sdk", "Profile"), def);
+
+        let diagnostics = PythonBackend::new().validate(&registry, &Config::default());
+
+        assert_eq!(diagnostics[0].code, DiagnosticCode::new(610));
+        assert_eq!(diagnostics[0].field_name.as_deref(), Some("address"));
     }
 
     #[test]

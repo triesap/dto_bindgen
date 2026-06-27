@@ -326,7 +326,8 @@ fn render_enum(
             Some(content.as_str()),
             output,
         ),
-        EnumRepr::External | EnumRepr::Untagged => Err(Diagnostic::error(
+        EnumRepr::External => render_external_data_enum(def, registry, config, ctx, output),
+        EnumRepr::Untagged => Err(Diagnostic::error(
             DiagnosticCode::new(501),
             "unsupported enum representation",
         )
@@ -350,6 +351,61 @@ fn render_fieldless_enum(def: &EnumDef, output: &mut String) {
     }
 
     output.push_str(";\n");
+}
+
+fn render_external_data_enum(
+    def: &EnumDef,
+    registry: &Registry,
+    config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
+    output: &mut String,
+) -> Result<(), Diagnostic> {
+    output.push_str("export type ");
+    output.push_str(enum_type_name(def));
+    output.push_str(" =\n");
+
+    for variant in &def.variants {
+        match &variant.shape {
+            VariantShape::Unit => {
+                output.push_str("  | \"");
+                output.push_str(&escape_string_literal(&variant.wire_name));
+                output.push_str("\"\n");
+            }
+            VariantShape::Newtype(ty) => {
+                output.push_str("  | {\n");
+                push_indent(output, 6);
+                push_object_key(output, &variant.wire_name);
+                output.push_str(": ");
+                let variant_field = variant_payload_field(def, variant, ty);
+                output.push_str(&render_type_ref(
+                    ty,
+                    None,
+                    registry,
+                    config,
+                    ctx,
+                    &variant_field,
+                )?);
+                output.push_str(";\n");
+                output.push_str("    }\n");
+            }
+            VariantShape::Struct(fields) => {
+                output.push_str("  | {\n");
+                push_indent(output, 6);
+                push_object_key(output, &variant.wire_name);
+                output.push_str(": {\n");
+                for field in fields.iter().filter(|field| field_is_emitted(field)) {
+                    render_object_field(field, registry, config, ctx, 8, output)?;
+                }
+                push_indent(output, 6);
+                output.push_str("};\n");
+                output.push_str("    }\n");
+            }
+            VariantShape::Tuple(_) => return Err(unsupported_variant(def, variant)),
+        }
+    }
+
+    output.push_str(";\n");
+    Ok(())
 }
 
 fn render_tagged_enum(
@@ -1003,6 +1059,105 @@ mod tests {
         assert!(contents.contains("\"type\": \"userDeleted\";"));
         assert!(contents.contains("payload: string;"));
         assert!(contents.contains("\"type\": \"ping\";"));
+    }
+
+    #[test]
+    fn renders_external_data_enum_variants() {
+        let mut registry = Registry::new();
+        let details_id = registry.register_type(
+            RustTypeId::new("sdk", "sdk", "ErrorDetails"),
+            TypeDef::Struct(
+                dto_bindgen_core::StructDef::new("ErrorDetails", "ErrorDetails", span())
+                    .with_field(field("reason", "reason", TypeRef::String)),
+            ),
+        );
+        let error = TypeDef::Enum(
+            EnumDef::new(
+                "ListingParseError",
+                "ListingParseError",
+                EnumRepr::External,
+                span(),
+            )
+            .with_variant(VariantDef::new(
+                "InvalidKind",
+                "InvalidKind",
+                VariantShape::Newtype(TypeRef::Primitive(Primitive::U32)),
+                span(),
+            ))
+            .with_variant(VariantDef::new(
+                "MissingTag",
+                "MissingTag",
+                VariantShape::Newtype(TypeRef::String),
+                span(),
+            ))
+            .with_variant(VariantDef::new(
+                "InvalidData",
+                "InvalidData",
+                VariantShape::Struct(vec![field(
+                    "details",
+                    "details",
+                    TypeRef::named(details_id),
+                )]),
+                span(),
+            ))
+            .with_variant(VariantDef::new(
+                "InvalidUnit",
+                "InvalidUnit",
+                VariantShape::Unit,
+                span(),
+            )),
+        );
+        let error_id =
+            registry.register_type(RustTypeId::new("sdk", "sdk", "ListingParseError"), error);
+        registry.add_dependency(error_id, details_id);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let contents = find_file(&files, "types.ts").contents();
+
+        assert!(contents.contains("InvalidKind: number;"));
+        assert!(contents.contains("MissingTag: string;"));
+        assert!(contents.contains("InvalidData: {"));
+        assert!(contents.contains("details: ErrorDetails;"));
+        assert!(contents.contains("| \"InvalidUnit\""));
+    }
+
+    #[test]
+    fn renders_internal_unit_and_struct_variants() {
+        let outcome = TypeDef::Enum(
+            EnumDef::new(
+                "RevisionOutcome",
+                "RevisionOutcome",
+                EnumRepr::Internal {
+                    tag: "decision".to_owned(),
+                },
+                span(),
+            )
+            .with_variant(VariantDef::new(
+                "Accepted",
+                "accepted",
+                VariantShape::Unit,
+                span(),
+            ))
+            .with_variant(VariantDef::new(
+                "Declined",
+                "declined",
+                VariantShape::Struct(vec![field("reason", "reason", TypeRef::String)]),
+                span(),
+            )),
+        );
+        let registry =
+            registry_with_types([(RustTypeId::new("sdk", "sdk", "RevisionOutcome"), outcome)]);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let contents = find_file(&files, "types.ts").contents();
+
+        assert!(contents.contains("decision: \"accepted\";"));
+        assert!(contents.contains("decision: \"declined\";"));
+        assert!(contents.contains("reason: string;"));
     }
 
     #[test]
