@@ -122,19 +122,13 @@ fn run_command(options: CliOptions, stdout: &mut String, stderr: &mut String) ->
         }
         Command::Roots | Command::RootsCheck | Command::Diagnostics => {
             match dto_bindgen::config::Config::from_toml_path(&options.config_path) {
-                Ok(config) => match config.root_discovery.mode {
-                    dto_bindgen::config::RootDiscoveryMode::Explicit
-                        if options.command == Command::Diagnostics =>
-                    {
-                        report_explicit_roots_required(&options, stderr)
-                    }
-                    dto_bindgen::config::RootDiscoveryMode::Explicit => {
-                        report_source_manifest_required(&options, stderr)
-                    }
-                    dto_bindgen::config::RootDiscoveryMode::SourceManifest => {
-                        run_source_manifest_command(&options, &config, stdout, stderr)
-                    }
-                },
+                Ok(config) if has_source_manifest_roots(&config) => {
+                    run_source_manifest_command(&options, &config, stdout, stderr)
+                }
+                Ok(_) if options.command == Command::Diagnostics => {
+                    report_explicit_roots_required(&options, stderr)
+                }
+                Ok(_) => report_source_manifest_required(&options, stderr),
                 Err(source) => {
                     writeln!(stderr, "error: {source}").expect("writing to a String cannot fail");
                     1
@@ -428,11 +422,11 @@ fn run_source_manifest_command(
     stderr: &mut String,
 ) -> i32 {
     match build_source_manifest_roots(options, config) {
-        Ok(root_module) => match options.command {
-            Command::Roots => write_source_manifest_roots(&root_module, stdout, stderr),
-            Command::RootsCheck => check_source_manifest_roots(&root_module, stdout, stderr),
+        Ok(root_modules) => match options.command {
+            Command::Roots => write_source_manifest_roots(&root_modules, stdout, stderr),
+            Command::RootsCheck => check_source_manifest_roots(&root_modules, stdout, stderr),
             Command::Diagnostics => {
-                report_source_manifest_diagnostics(options, &root_module, stdout);
+                report_source_manifest_diagnostics(options, &root_modules, stdout);
                 0
             }
             Command::Help
@@ -452,20 +446,81 @@ fn run_source_manifest_command(
     }
 }
 
+#[derive(Debug, Clone)]
 struct SourceManifestRoots {
+    package_key: Option<String>,
     root_module_path: PathBuf,
-    source_file_count: usize,
+    source_files: Vec<String>,
     module: dto_bindgen_core::GeneratedRootModule,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RootModuleStatus {
+    Missing,
+    Current,
+    Stale,
+    ReadError(String),
+}
+
+impl RootModuleStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Current => "current",
+            Self::Stale => "stale",
+            Self::ReadError(_) => "read_error",
+        }
+    }
 }
 
 fn build_source_manifest_roots(
     options: &CliOptions,
     config: &dto_bindgen::config::Config,
+) -> Result<Vec<SourceManifestRoots>, String> {
+    source_manifest_jobs(config)
+        .into_iter()
+        .map(|job| build_source_manifest_root(options, config, job))
+        .collect()
+}
+
+struct SourceManifestJob {
+    package_key: Option<String>,
+    source_files: Vec<String>,
+    root_module_file: String,
+}
+
+fn source_manifest_jobs(config: &dto_bindgen::config::Config) -> Vec<SourceManifestJob> {
+    if config.root_discovery.mode == dto_bindgen::config::RootDiscoveryMode::SourceManifest {
+        return vec![SourceManifestJob {
+            package_key: None,
+            source_files: config.root_discovery.source_files.clone(),
+            root_module_file: config.root_discovery.root_module_file.clone(),
+        }];
+    }
+
+    config
+        .packages
+        .iter()
+        .filter(|package| {
+            package.root_discovery.mode == dto_bindgen::config::RootDiscoveryMode::SourceManifest
+        })
+        .map(|package| SourceManifestJob {
+            package_key: Some(package.key.clone()),
+            source_files: package.root_discovery.source_files.clone(),
+            root_module_file: package.root_discovery.root_module_file.clone(),
+        })
+        .collect()
+}
+
+fn build_source_manifest_root(
+    options: &CliOptions,
+    config: &dto_bindgen::config::Config,
+    job: SourceManifestJob,
 ) -> Result<SourceManifestRoots, String> {
     let config_dir = config_dir(&options.config_path);
     let mut inventories = Vec::new();
 
-    for source_file in &config.root_discovery.source_files {
+    for source_file in &job.source_files {
         let source_path = resolve_path(config_dir, source_file);
         let input = fs::read_to_string(&source_path)
             .map_err(|source| format!("failed to read `{}`: {source}", source_path.display()))?;
@@ -475,108 +530,252 @@ fn build_source_manifest_roots(
         );
     }
 
-    let module = dto_bindgen_core::generate_root_module(config, &inventories)
+    let mut root_config = config.clone();
+    root_config.root_discovery.mode = dto_bindgen::config::RootDiscoveryMode::SourceManifest;
+    root_config.root_discovery.source_files = job.source_files.clone();
+    root_config.root_discovery.root_module_file = job.root_module_file;
+
+    let module = dto_bindgen_core::generate_root_module(&root_config, &inventories)
         .map_err(|source| format!("failed to generate dto root module: {source}"))?;
     let root_module_path = resolve_path(config_dir, &module.path);
 
     Ok(SourceManifestRoots {
+        package_key: job.package_key,
         root_module_path,
-        source_file_count: config.root_discovery.source_files.len(),
+        source_files: root_config.root_discovery.source_files,
         module,
     })
 }
 
 fn write_source_manifest_roots(
-    roots: &SourceManifestRoots,
+    root_modules: &[SourceManifestRoots],
     stdout: &mut String,
     stderr: &mut String,
 ) -> i32 {
-    match write_report_file(&roots.root_module_path, &roots.module.contents) {
-        Ok(()) => {
-            writeln!(stdout, "dto_bindgen roots ok").expect("writing to a String cannot fail");
-            writeln!(stdout, "root_module = {}", roots.root_module_path.display())
-                .expect("writing to a String cannot fail");
-            writeln!(stdout, "roots = {}", roots.module.roots.len())
-                .expect("writing to a String cannot fail");
-            0
-        }
-        Err(message) => {
+    for roots in root_modules {
+        if let Err(message) = write_report_file(&roots.root_module_path, &roots.module.contents) {
             writeln!(stderr, "error: {message}").expect("writing to a String cannot fail");
-            1
+            return 1;
         }
     }
+
+    writeln!(stdout, "dto_bindgen roots ok").expect("writing to a String cannot fail");
+    write_source_manifest_summary(stdout, root_modules);
+    0
 }
 
 fn check_source_manifest_roots(
-    roots: &SourceManifestRoots,
+    root_modules: &[SourceManifestRoots],
     stdout: &mut String,
     stderr: &mut String,
 ) -> i32 {
+    for roots in root_modules {
+        match inspect_root_module_status(roots) {
+            RootModuleStatus::Current => {}
+            RootModuleStatus::Stale => {
+                writeln!(
+                    stderr,
+                    "error: generated root module is stale: {}",
+                    roots.root_module_path.display()
+                )
+                .expect("writing to a String cannot fail");
+                return 1;
+            }
+            RootModuleStatus::Missing => {
+                writeln!(
+                    stderr,
+                    "error: generated root module is missing: {}",
+                    roots.root_module_path.display()
+                )
+                .expect("writing to a String cannot fail");
+                return 1;
+            }
+            RootModuleStatus::ReadError(message) => {
+                writeln!(
+                    stderr,
+                    "error: failed to read generated root module `{}`: {message}",
+                    roots.root_module_path.display()
+                )
+                .expect("writing to a String cannot fail");
+                return 1;
+            }
+        }
+    }
+
+    writeln!(stdout, "dto_bindgen roots ok").expect("writing to a String cannot fail");
+    write_source_manifest_summary(stdout, root_modules);
+    0
+}
+
+fn inspect_root_module_status(roots: &SourceManifestRoots) -> RootModuleStatus {
     match fs::read_to_string(&roots.root_module_path) {
-        Ok(existing) if existing == roots.module.contents => {
-            writeln!(stdout, "dto_bindgen roots ok").expect("writing to a String cannot fail");
-            writeln!(stdout, "root_module = {}", roots.root_module_path.display())
-                .expect("writing to a String cannot fail");
-            writeln!(stdout, "roots = {}", roots.module.roots.len())
-                .expect("writing to a String cannot fail");
-            0
-        }
-        Ok(_) => {
-            writeln!(
-                stderr,
-                "error: generated root module is stale: {}",
-                roots.root_module_path.display()
-            )
-            .expect("writing to a String cannot fail");
-            1
-        }
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            writeln!(
-                stderr,
-                "error: generated root module is missing: {}",
-                roots.root_module_path.display()
-            )
-            .expect("writing to a String cannot fail");
-            1
-        }
-        Err(source) => {
-            writeln!(
-                stderr,
-                "error: failed to read generated root module `{}`: {source}",
-                roots.root_module_path.display()
-            )
-            .expect("writing to a String cannot fail");
-            1
-        }
+        Ok(existing) if existing == roots.module.contents => RootModuleStatus::Current,
+        Ok(_) => RootModuleStatus::Stale,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => RootModuleStatus::Missing,
+        Err(source) => RootModuleStatus::ReadError(source.to_string()),
     }
 }
 
 fn report_source_manifest_diagnostics(
     options: &CliOptions,
-    roots: &SourceManifestRoots,
+    root_modules: &[SourceManifestRoots],
     stdout: &mut String,
 ) {
     if options.json {
-        writeln!(
-            stdout,
-            "{{\"root_discovery\":{{\"mode\":\"source_manifest\",\"root_module\":\"{}\",\"source_files\":{},\"roots\":{}}}}}",
-            escape_json(&roots.root_module_path.display().to_string()),
-            roots.source_file_count,
-            roots.module.roots.len()
-        )
-        .expect("writing to a String cannot fail");
+        write_source_manifest_diagnostics_json(stdout, root_modules);
         return;
     }
 
     writeln!(stdout, "dto_bindgen diagnostics ok").expect("writing to a String cannot fail");
     writeln!(stdout, "root_discovery.mode = source_manifest")
         .expect("writing to a String cannot fail");
+    write_source_manifest_summary(stdout, root_modules);
+    for roots in root_modules {
+        write_source_manifest_detail(stdout, roots);
+    }
+}
+
+fn write_source_manifest_summary(stdout: &mut String, root_modules: &[SourceManifestRoots]) {
+    writeln!(stdout, "root_modules = {}", root_modules.len())
+        .expect("writing to a String cannot fail");
+    writeln!(
+        stdout,
+        "source_files = {}",
+        source_manifest_file_count(root_modules)
+    )
+    .expect("writing to a String cannot fail");
+    writeln!(
+        stdout,
+        "roots = {}",
+        source_manifest_root_count(root_modules)
+    )
+    .expect("writing to a String cannot fail");
+}
+
+fn write_source_manifest_detail(stdout: &mut String, roots: &SourceManifestRoots) {
+    if let Some(package_key) = &roots.package_key {
+        writeln!(stdout, "package = {package_key}").expect("writing to a String cannot fail");
+    }
     writeln!(stdout, "root_module = {}", roots.root_module_path.display())
         .expect("writing to a String cannot fail");
-    writeln!(stdout, "source_files = {}", roots.source_file_count)
+    writeln!(
+        stdout,
+        "status = {}",
+        inspect_root_module_status(roots).as_str()
+    )
+    .expect("writing to a String cannot fail");
+    for source_file in &roots.source_files {
+        writeln!(stdout, "source_file = {source_file}").expect("writing to a String cannot fail");
+    }
+    for root in &roots.module.roots {
+        writeln!(
+            stdout,
+            "root = {} {} {}",
+            root.rust_name, root.type_path, root.source_file
+        )
         .expect("writing to a String cannot fail");
-    writeln!(stdout, "roots = {}", roots.module.roots.len())
+    }
+}
+
+fn write_source_manifest_diagnostics_json(
+    stdout: &mut String,
+    root_modules: &[SourceManifestRoots],
+) {
+    write!(
+        stdout,
+        "{{\"root_discovery\":{{\"mode\":\"source_manifest\",\"root_module_count\":{},\"source_file_count\":{},\"root_count\":{},\"root_modules\":[",
+        root_modules.len(),
+        source_manifest_file_count(root_modules),
+        source_manifest_root_count(root_modules)
+    )
+    .expect("writing to a String cannot fail");
+
+    for (index, roots) in root_modules.iter().enumerate() {
+        if index > 0 {
+            stdout.push(',');
+        }
+        write_source_manifest_roots_json(stdout, roots);
+    }
+
+    writeln!(stdout, "]}}}}").expect("writing to a String cannot fail");
+}
+
+fn write_source_manifest_roots_json(stdout: &mut String, roots: &SourceManifestRoots) {
+    let status = inspect_root_module_status(roots);
+    stdout.push('{');
+    match &roots.package_key {
+        Some(package_key) => {
+            write!(stdout, "\"package\":\"{}\",", escape_json(package_key))
+                .expect("writing to a String cannot fail");
+        }
+        None => stdout.push_str("\"package\":null,"),
+    }
+    write!(
+        stdout,
+        "\"root_module\":\"{}\",\"status\":\"{}\",\"source_files\":",
+        escape_json(&roots.root_module_path.display().to_string()),
+        status.as_str()
+    )
+    .expect("writing to a String cannot fail");
+    write_json_string_array(stdout, &roots.source_files);
+    write!(
+        stdout,
+        ",\"source_file_count\":{},\"root_count\":{},\"roots\":[",
+        roots.source_files.len(),
+        roots.module.roots.len()
+    )
+    .expect("writing to a String cannot fail");
+    for (index, root) in roots.module.roots.iter().enumerate() {
+        if index > 0 {
+            stdout.push(',');
+        }
+        write!(
+            stdout,
+            "{{\"rust_name\":\"{}\",\"type_path\":\"{}\",\"source_file\":\"{}\"}}",
+            escape_json(&root.rust_name),
+            escape_json(&root.type_path),
+            escape_json(&root.source_file)
+        )
         .expect("writing to a String cannot fail");
+    }
+    stdout.push(']');
+    if let RootModuleStatus::ReadError(message) = status {
+        write!(stdout, ",\"status_error\":\"{}\"", escape_json(&message))
+            .expect("writing to a String cannot fail");
+    }
+    stdout.push('}');
+}
+
+fn write_json_string_array(stdout: &mut String, values: &[String]) {
+    stdout.push('[');
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            stdout.push(',');
+        }
+        write!(stdout, "\"{}\"", escape_json(value)).expect("writing to a String cannot fail");
+    }
+    stdout.push(']');
+}
+
+fn source_manifest_file_count(root_modules: &[SourceManifestRoots]) -> usize {
+    root_modules
+        .iter()
+        .map(|roots| roots.source_files.len())
+        .sum()
+}
+
+fn source_manifest_root_count(root_modules: &[SourceManifestRoots]) -> usize {
+    root_modules
+        .iter()
+        .map(|roots| roots.module.roots.len())
+        .sum()
+}
+
+fn has_source_manifest_roots(config: &dto_bindgen::config::Config) -> bool {
+    config.root_discovery.mode == dto_bindgen::config::RootDiscoveryMode::SourceManifest
+        || config.packages.iter().any(|package| {
+            package.root_discovery.mode == dto_bindgen::config::RootDiscoveryMode::SourceManifest
+        })
 }
 
 fn root_discovery_mode_name(mode: dto_bindgen::config::RootDiscoveryMode) -> &'static str {
@@ -630,7 +829,7 @@ fn report_source_manifest_required(options: &CliOptions, stderr: &mut String) ->
     } else {
         writeln!(
             stderr,
-            "error: dto_bindgen {} requires root_discovery.mode = \"source_manifest\"",
+            "error: dto_bindgen {} requires top-level or package root_discovery.mode = \"source_manifest\"",
             options.command.as_str()
         )
         .expect("writing to a String cannot fail");
@@ -660,6 +859,10 @@ fn escape_json(value: &str) -> String {
             '\n' => escaped.push_str("\\n"),
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
+            other if other.is_control() => {
+                write!(escaped, "\\u{:04x}", other as u32)
+                    .expect("writing to a String cannot fail");
+            }
             other => escaped.push(other),
         }
     }
@@ -1129,8 +1332,126 @@ package = "sdk_dto"
         assert_eq!(code, 0);
         assert!(stderr.is_empty());
         assert!(stdout.contains("\"mode\":\"source_manifest\""));
-        assert!(stdout.contains("\"source_files\":1"));
-        assert!(stdout.contains("\"roots\":1"));
+        assert!(stdout.contains("\"root_module_count\":1"));
+        assert!(stdout.contains("\"source_file_count\":1"));
+        assert!(stdout.contains("\"root_count\":1"));
+        assert!(stdout.contains("\"status\":\"missing\""));
+        assert!(stdout.contains("\"source_files\":[\"src/sdk.rs\"]"));
+        assert!(stdout.contains("\"rust_name\":\"UserProfile\""));
+        assert!(stdout.contains("\"type_path\":\"crate::sdk::UserProfile\""));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnostics_command_reports_current_source_manifest_json() {
+        let root = temp_project();
+        let config_path = write_source_manifest_project(&root);
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        assert_eq!(
+            run(
+                vec![
+                    "roots".to_owned(),
+                    "--config".to_owned(),
+                    config_path.display().to_string(),
+                ],
+                &mut stdout,
+                &mut stderr,
+            ),
+            0
+        );
+
+        stdout.clear();
+        stderr.clear();
+        let code = run(
+            vec![
+                "diagnostics".to_owned(),
+                "--json".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert!(stdout.contains("\"status\":\"current\""));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnostics_command_reports_stale_source_manifest_json() {
+        let root = temp_project();
+        let config_path = write_source_manifest_project(&root);
+        let generated_dir = root.join("src/generated");
+        std::fs::create_dir_all(&generated_dir).unwrap();
+        std::fs::write(generated_dir.join("dto_roots.rs"), "stale\n").unwrap();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        let code = run(
+            vec![
+                "diagnostics".to_owned(),
+                "--json".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert!(stdout.contains("\"status\":\"stale\""));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn roots_command_writes_package_source_manifest_root_modules() {
+        let root = temp_project();
+        let config_path = write_package_source_manifest_project(&root);
+        let generated_roots = root.join("crates/core/src/generated/dto_roots.rs");
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        let code = run(
+            vec![
+                "roots".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert!(stdout.contains("dto_bindgen roots ok"));
+        assert!(stdout.contains("root_modules = 1"));
+        assert!(generated_roots.exists());
+
+        stdout.clear();
+        stderr.clear();
+        let code = run(
+            vec![
+                "diagnostics".to_owned(),
+                "--json".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 0);
+        assert!(stderr.is_empty());
+        assert!(stdout.contains("\"package\":\"core\""));
+        assert!(stdout.contains("\"status\":\"current\""));
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1163,6 +1484,41 @@ struct InternalState {
 mode = "source_manifest"
 source_files = ["src/sdk.rs"]
 root_module_file = "src/generated/dto_roots.rs"
+"#,
+        )
+        .unwrap();
+        config_path
+    }
+
+    fn write_package_source_manifest_project(root: &Path) -> PathBuf {
+        let src = root.join("crates/core/src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("sdk.rs"),
+            r#"
+#[derive(Dto)]
+#[dto(export)]
+struct CoreProfile {
+    id: String,
+}
+"#,
+        )
+        .unwrap();
+        let config_path = root.join("dto_bindgen.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[[package]]
+key = "core"
+rust_package = "radroots-core"
+rust_crate = "radroots_core"
+npm = "@radroots/core-bindings"
+out_dir = "packages/core-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/sdk.rs"]
+root_module_file = "crates/core/src/generated/dto_roots.rs"
 "#,
         )
         .unwrap();
