@@ -712,12 +712,17 @@ impl SourceInventory {
                 .chain(item.variants.iter().flat_map(|v| &v.fields))
         })
     }
+
+    pub fn exported_roots(&self) -> impl Iterator<Item = &InventoryItem> {
+        self.items.iter().filter(|item| item.exported)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InventoryItem {
     pub kind: InventoryItemKind,
     pub rust_name: String,
+    pub exported: bool,
     pub derives: Vec<String>,
     pub generics: Vec<String>,
     pub attrs: Vec<InventoryAttribute>,
@@ -973,6 +978,7 @@ impl InventoryScanner {
         self.inventory.items.push(InventoryItem {
             kind: InventoryItemKind::Struct,
             rust_name: type_name,
+            exported: has_dto_export(&attrs),
             derives,
             generics,
             attrs,
@@ -1047,6 +1053,7 @@ impl InventoryScanner {
         self.inventory.items.push(InventoryItem {
             kind: InventoryItemKind::Enum,
             rust_name: type_name,
+            exported: has_dto_export(&attrs),
             derives,
             generics,
             attrs,
@@ -1263,6 +1270,12 @@ fn collect_known_items(items: &[Item]) -> BTreeSet<String> {
         .collect()
 }
 
+fn has_dto_export(attrs: &[InventoryAttribute]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| attr.namespace == "dto" && attr.name == "export")
+}
+
 fn collect_known_dto_items(items: &[Item]) -> BTreeSet<String> {
     items
         .iter()
@@ -1382,6 +1395,7 @@ fn attr_supported(namespace: &str, scope: AttrScope, meta: &Meta) -> bool {
         }
         ("serde", AttrScope::Field, "default") => matches!(meta, Meta::Path(_)),
         ("serde", AttrScope::Variant, "rename") => !matches!(meta, Meta::List(_)),
+        ("dto", AttrScope::Container, "export") => matches!(meta, Meta::Path(_)),
         ("dto", AttrScope::Field, "skip" | "int_repr") => !matches!(meta, Meta::List(_)),
         _ => false,
     }
@@ -1633,6 +1647,60 @@ mod tests {
                 .findings
                 .iter()
                 .any(|finding| { finding.attribute.as_deref() == Some("serde::default") })
+        );
+    }
+
+    #[test]
+    fn scans_dto_export_roots_without_promoting_internal_types() {
+        let source = r#"
+            #[derive(Dto)]
+            #[dto(export)]
+            struct UserProfile {
+                id: String,
+                internal: InternalState,
+            }
+
+            #[derive(Dto)]
+            struct InternalState {
+                #[dto(skip)]
+                note: String,
+            }
+
+            #[derive(Dto)]
+            #[dto(export)]
+            enum UserEvent {
+                Renamed { profile: UserProfile },
+                Deleted,
+            }
+        "#;
+
+        let inventory = scan_rust_source("src/sdk.rs", source).unwrap();
+        let exported = inventory
+            .exported_roots()
+            .map(|item| item.rust_name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(exported, ["UserProfile", "UserEvent"]);
+        assert!(
+            !inventory
+                .items
+                .iter()
+                .find(|item| item.rust_name == "InternalState")
+                .unwrap()
+                .exported
+        );
+        assert!(inventory.items.iter().any(|item| {
+            item.rust_name == "UserProfile"
+                && item
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.namespace == "dto" && attr.name == "export" && attr.supported)
+        }));
+        assert!(
+            !inventory
+                .findings
+                .iter()
+                .any(|finding| { finding.attribute.as_deref() == Some("dto::export") })
         );
     }
 
