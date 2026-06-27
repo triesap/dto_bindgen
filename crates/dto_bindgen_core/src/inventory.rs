@@ -3,10 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use quote::ToTokens;
 use serde::{Deserialize, Serialize};
-use syn::spanned::Spanned;
 use syn::{
     Attribute, Expr, ExprLit, Fields, GenericArgument, Item, ItemEnum, ItemStruct, Lit, Meta,
-    PathArguments, Type, punctuated::Punctuated,
+    PathArguments, Type, parse::Parser, punctuated::Punctuated, spanned::Spanned,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1341,12 +1340,27 @@ fn generic_names(generics: &syn::Generics) -> Vec<String> {
 
 fn meta_children(meta: &Meta) -> syn::Result<Vec<Meta>> {
     match meta {
-        Meta::List(list) => Ok(list
-            .parse_args_with(Punctuated::<Meta, syn::Token![,]>::parse_terminated)?
-            .into_iter()
-            .collect()),
+        Meta::List(list) => {
+            let parser = Punctuated::<Meta, syn::Token![,]>::parse_terminated;
+            let children = match parser.parse2(list.tokens.clone()) {
+                Ok(children) => children,
+                Err(error) => {
+                    let Some(repaired) = repair_meta_keyword_tokens(&list.tokens.to_string())
+                    else {
+                        return Err(error);
+                    };
+                    parser.parse_str(&repaired)?
+                }
+            };
+            Ok(children.into_iter().collect())
+        }
         Meta::Path(_) | Meta::NameValue(_) => Ok(Vec::new()),
     }
+}
+
+fn repair_meta_keyword_tokens(tokens: &str) -> Option<String> {
+    let repaired = tokens.replace("as =", "r#as =");
+    (repaired != tokens).then_some(repaired)
 }
 
 fn meta_path(meta: &Meta) -> String {
@@ -1356,7 +1370,13 @@ fn meta_path(meta: &Meta) -> String {
         | Meta::NameValue(syn::MetaNameValue { path, .. }) => path
             .segments
             .iter()
-            .map(|segment| segment.ident.to_string())
+            .map(|segment| {
+                segment
+                    .ident
+                    .to_string()
+                    .trim_start_matches("r#")
+                    .to_owned()
+            })
             .collect::<Vec<_>>()
             .join("::"),
     }
@@ -1389,16 +1409,41 @@ fn attr_supported(namespace: &str, scope: AttrScope, meta: &Meta) -> bool {
             | "content"
             | "deny_unknown_fields",
         ) => !matches!(meta, Meta::List(_)),
-        ("serde", AttrScope::Field, "rename" | "skip") => !matches!(meta, Meta::List(_)),
+        ("serde", AttrScope::Container, "transparent") => matches!(meta, Meta::Path(_)),
+        ("serde", AttrScope::Field, "rename") => !matches!(meta, Meta::List(_)),
+        ("serde", AttrScope::Field, "skip") => matches!(meta, Meta::Path(_)),
         ("serde", AttrScope::Field, "skip_serializing_if") => {
             meta_value(meta).as_deref() == Some("Option::is_none")
         }
         ("serde", AttrScope::Field, "default") => matches!(meta, Meta::Path(_)),
         ("serde", AttrScope::Variant, "rename") => !matches!(meta, Meta::List(_)),
         ("dto", AttrScope::Container, "export") => matches!(meta, Meta::Path(_)),
-        ("dto", AttrScope::Field, "skip" | "int_repr") => !matches!(meta, Meta::List(_)),
+        ("dto", AttrScope::Container, "as") => {
+            matches!(meta_value(meta).as_deref(), Some("string" | "string_enum"))
+        }
+        ("dto", AttrScope::Container, "ts") => dto_ts_name_supported(meta),
+        ("dto", AttrScope::Field, "skip") => matches!(meta, Meta::Path(_)),
+        ("dto", AttrScope::Field, "as") => meta_value(meta).as_deref() == Some("string"),
+        ("dto", AttrScope::Field, "int" | "int_repr") => matches!(
+            meta_value(meta).as_deref(),
+            Some("json_string" | "json_number")
+        ),
+        ("dto", AttrScope::Field, "bytes") => meta_value(meta).as_deref() == Some("base64"),
+        ("dto", AttrScope::Variant, "rename") => !matches!(meta, Meta::List(_)),
         _ => false,
     }
+}
+
+fn dto_ts_name_supported(meta: &Meta) -> bool {
+    let Ok(children) = meta_children(meta) else {
+        return false;
+    };
+    children.len() == 1
+        && children.iter().all(|child| {
+            meta_path(child) == "name"
+                && matches!(child, Meta::NameValue(_))
+                && meta_value(child).is_some()
+        })
 }
 
 fn type_paths(ty: &Type) -> Vec<String> {
@@ -1702,6 +1747,82 @@ mod tests {
                 .iter()
                 .any(|finding| { finding.attribute.as_deref() == Some("dto::export") })
         );
+    }
+
+    #[test]
+    fn scans_v1_dto_attrs_as_supported_inventory_input() {
+        let source = r#"
+            #[derive(Dto)]
+            #[dto(as = "string")]
+            struct Decimal {
+                value: String,
+            }
+
+            #[derive(Dto)]
+            #[serde(transparent)]
+            struct UserId {
+                value: String,
+            }
+
+            #[derive(Dto)]
+            #[dto(as = "string_enum")]
+            enum Unit {
+                #[dto(rename = "kg")]
+                Kilogram,
+                #[dto(rename = "lb")]
+                Pound,
+            }
+
+            #[derive(Dto)]
+            #[dto(export)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct Attachment {
+                #[dto(skip)]
+                internal_note: String,
+                #[dto(as = "string")]
+                amount: Decimal,
+                #[dto(int = "json_string")]
+                sequence: u128,
+                #[dto(int_repr = "json_number")]
+                legacy_sequence: u64,
+                #[dto(bytes = "base64")]
+                payload: Vec<u8>,
+            }
+        "#;
+
+        let inventory = scan_rust_source("src/sdk.rs", source).unwrap();
+        let unsupported_attrs = inventory
+            .findings
+            .iter()
+            .filter(|finding| finding.code == "INV0300")
+            .map(|finding| finding.attribute.as_deref().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert_eq!(unsupported_attrs, Vec::<&str>::new());
+    }
+
+    #[test]
+    fn reports_unknown_dto_attr_values_as_unsupported() {
+        let source = r#"
+            #[derive(Dto)]
+            struct Attachment {
+                #[dto(int = "magic")]
+                sequence: u128,
+                #[dto(bytes = "raw")]
+                payload: Vec<u8>,
+            }
+        "#;
+
+        let inventory = scan_rust_source("src/sdk.rs", source).unwrap();
+        let unsupported_attrs = inventory
+            .findings
+            .iter()
+            .filter(|finding| finding.code == "INV0300")
+            .map(|finding| finding.attribute.as_deref().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert!(unsupported_attrs.contains(&"dto::int"));
+        assert!(unsupported_attrs.contains(&"dto::bytes"));
     }
 
     #[test]

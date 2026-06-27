@@ -53,7 +53,7 @@ enum SdkEvent {
 #[allow(dead_code)]
 #[derive(Dto)]
 struct LedgerEntry {
-    #[dto(int_repr = "json_string")]
+    #[dto(int = "json_string")]
     amount_minor_units: u128,
 }
 
@@ -251,7 +251,7 @@ fn inventory_preserves_skipped_fields_while_export_omits_them() {
 }
 
 #[test]
-fn dto_int_repr_satisfies_large_integer_policy() {
+fn dto_int_satisfies_large_integer_policy() {
     let config_path = temp_config("");
 
     let report =

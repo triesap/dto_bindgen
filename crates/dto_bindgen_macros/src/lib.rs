@@ -4,8 +4,8 @@ use proc_macro::TokenStream;
 
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, Data, DataEnum, DeriveInput, Fields, Ident, LitStr, Token, Type, parse_macro_input,
-    spanned::Spanned,
+    Attribute, Data, DataEnum, DeriveInput, Fields, GenericArgument, Ident, LitStr, PathArguments,
+    Token, Type, parse_macro_input, spanned::Spanned,
 };
 
 #[proc_macro_derive(Dto, attributes(dto, serde))]
@@ -114,6 +114,8 @@ fn expand_enum(
                         .rename
                         .unwrap_or_else(|| container_attrs.rename_variant_field(&rust_name));
                     let ty = field.ty;
+                    let field_ty_expr =
+                        type_ref_expr_tokens(&ty, field_attrs.dto_as, field_attrs.bytes_repr)?;
                     let field_expr = field_def_tokens(FieldDefTokens {
                         field_var: &field_var,
                         rust_name: &rust_name,
@@ -126,7 +128,7 @@ fn expand_enum(
                     })?;
 
                     field_tokens.push(quote! {
-                        let #field_var = <#ty as ::dto_bindgen::Dto>::describe(ctx);
+                        let #field_var = #field_ty_expr;
                         #variant_fields_var.push(#field_expr);
                     });
                 }
@@ -164,7 +166,8 @@ fn expand_enum(
                     ));
                 }
                 let ty = field.ty;
-                let ty_expr = type_ref_expr_tokens(&ty, field_attrs.dto_as)?;
+                let ty_expr =
+                    type_ref_expr_tokens(&ty, field_attrs.dto_as, field_attrs.bytes_repr)?;
 
                 variant_tokens.push(quote! {
                     let __dto_bindgen_variant_ty = #ty_expr;
@@ -346,6 +349,7 @@ fn expand_struct(
             .unwrap_or_else(|| container_attrs.rename_field(&rust_name));
         let ty = field.ty;
         let dto_as = field_attrs.dto_as;
+        let bytes_repr = field_attrs.bytes_repr;
 
         let field_expr = field_def_tokens(FieldDefTokens {
             field_var: &field_var,
@@ -357,7 +361,7 @@ fn expand_struct(
             skip_serializing_if: field_attrs.skip_serializing_if,
             source: field_source,
         })?;
-        let field_ty_expr = type_ref_expr_tokens(&ty, dto_as)?;
+        let field_ty_expr = type_ref_expr_tokens(&ty, dto_as, bytes_repr)?;
         field_tokens.push(quote! {
             let #field_var = #field_ty_expr;
             __dto_bindgen_def = __dto_bindgen_def.with_field(#field_expr);
@@ -451,7 +455,7 @@ fn expand_transparent_struct(
         ));
     }
     let ty = field.ty;
-    let ty_expr = type_ref_expr_tokens(&ty, field_attrs.dto_as)?;
+    let ty_expr = type_ref_expr_tokens(&ty, field_attrs.dto_as, field_attrs.bytes_repr)?;
 
     Ok(quote! {
         impl ::dto_bindgen::Dto for #ident {
@@ -585,6 +589,7 @@ struct FieldAttrs {
     skip_serializing_if: Option<String>,
     int_repr: Option<IntReprAttr>,
     dto_as: Option<DtoAsAttr>,
+    bytes_repr: Option<BytesReprAttr>,
 }
 
 impl FieldAttrs {
@@ -608,6 +613,10 @@ impl FieldAttrs {
                     } else if meta.path.is_ident("int") || meta.path.is_ident("int_repr") {
                         parsed.int_repr =
                             Some(IntReprAttr::parse(&parse_string_value(&meta)?, &meta)?);
+                        Ok(())
+                    } else if meta.path.is_ident("bytes") {
+                        parsed.bytes_repr =
+                            Some(BytesReprAttr::parse(&parse_string_value(&meta)?, &meta)?);
                         Ok(())
                     } else {
                         Err(meta.error("unsupported dto field attribute for `Dto` derive"))
@@ -667,7 +676,28 @@ impl FieldAttrs {
 fn type_ref_expr_tokens(
     ty: &Type,
     dto_as: Option<DtoAsAttr>,
+    bytes_repr: Option<BytesReprAttr>,
 ) -> syn::Result<proc_macro2::TokenStream> {
+    if dto_as.is_some() && bytes_repr.is_some() {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "dto(as = \"...\") and dto(bytes = \"...\") cannot be combined",
+        ));
+    }
+
+    if let Some(bytes_repr) = bytes_repr {
+        if !is_vec_u8_type(ty) {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "dto(bytes = \"base64\") is supported only for Vec<u8> fields",
+            ));
+        }
+        let bytes_repr = bytes_repr.tokens();
+        return Ok(quote!(
+            ::dto_bindgen::__private::TypeRef::Bytes(#bytes_repr)
+        ));
+    }
+
     match dto_as {
         Some(DtoAsAttr::String) => Ok(quote!(::dto_bindgen::__private::TypeRef::String)),
         Some(DtoAsAttr::StringEnum) => Err(syn::Error::new_spanned(
@@ -676,6 +706,29 @@ fn type_ref_expr_tokens(
         )),
         None => Ok(quote!(<#ty as ::dto_bindgen::Dto>::describe(ctx))),
     }
+}
+
+fn is_vec_u8_type(ty: &Type) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return false;
+    };
+    if segment.ident != "Vec" {
+        return false;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return false;
+    };
+    let Some(GenericArgument::Type(Type::Path(item))) = args.args.first() else {
+        return false;
+    };
+    item.path
+        .segments
+        .last()
+        .map(|segment| segment.ident == "u8")
+        .unwrap_or(false)
 }
 
 fn field_presence_tokens(
@@ -767,6 +820,26 @@ impl IntReprAttr {
         match self {
             Self::JsonString => quote!(::dto_bindgen::__private::IntRepr::JsonString),
             Self::JsonNumber => quote!(::dto_bindgen::__private::IntRepr::JsonNumber),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BytesReprAttr {
+    Base64String,
+}
+
+impl BytesReprAttr {
+    fn parse(value: &str, meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Self> {
+        match value {
+            "base64" => Ok(Self::Base64String),
+            _ => Err(meta.error("unsupported dto bytes value")),
+        }
+    }
+
+    fn tokens(self) -> proc_macro2::TokenStream {
+        match self {
+            Self::Base64String => quote!(::dto_bindgen::__private::BytesRepr::Base64String),
         }
     }
 }
@@ -1235,6 +1308,36 @@ mod tests {
     }
 
     #[test]
+    fn supports_field_level_base64_bytes_mapping() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Attachment {
+                #[dto(bytes = "base64")]
+                payload: Vec<u8>,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("TypeRef :: Bytes"));
+        assert!(tokens.contains("BytesRepr :: Base64String"));
+        assert!(!tokens.contains("< Vec < u8 > as :: dto_bindgen :: Dto >"));
+    }
+
+    #[test]
+    fn rejects_bytes_mapping_for_non_bytes_fields() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Attachment {
+                #[dto(bytes = "base64")]
+                payload: String,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("supported only for Vec<u8>"));
+    }
+
+    #[test]
     fn supports_string_enum_mapping_with_dto_variant_renames() {
         let input: DeriveInput = syn::parse_quote! {
             #[dto(as = "string_enum")]
@@ -1333,7 +1436,7 @@ mod tests {
         let input: DeriveInput = syn::parse_quote! {
             struct LedgerEntry {
                 #[serde(with = "my_u128_string_serde")]
-                #[dto(int_repr = "json_string")]
+                #[dto(int = "json_string")]
                 amount: u128,
             }
         };
@@ -1502,7 +1605,21 @@ mod tests {
     }
 
     #[test]
-    fn accepts_json_number_int_repr_values() {
+    fn accepts_json_number_int_values() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct LedgerEntry {
+                #[dto(int = "json_number")]
+                sequence: u64,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand");
+
+        assert!(tokens.to_string().contains("JsonNumber"));
+    }
+
+    #[test]
+    fn accepts_legacy_json_number_int_repr_values() {
         let input: DeriveInput = syn::parse_quote! {
             struct LedgerEntry {
                 #[dto(int_repr = "json_number")]

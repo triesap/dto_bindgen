@@ -40,7 +40,7 @@ enum SdkEvent {
 #[allow(dead_code)]
 #[derive(Dto)]
 struct LedgerEntry {
-    #[dto(int_repr = "json_string")]
+    #[dto(int = "json_string")]
     amount_minor_units: u128,
 }
 
