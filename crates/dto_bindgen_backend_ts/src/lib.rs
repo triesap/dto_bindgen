@@ -370,23 +370,39 @@ fn render_tagged_enum(
         output.push_str(&escape_string_literal(&variant.wire_name));
         output.push_str("\";\n");
 
-        let VariantShape::Struct(fields) = &variant.shape else {
-            return Err(unsupported_variant(def, variant));
-        };
-
-        if let Some(content) = content {
-            push_indent(output, 6);
-            push_object_key(output, content);
-            output.push_str(": {\n");
-            for field in fields.iter().filter(|field| field_is_emitted(field)) {
-                render_object_field(field, registry, config, ctx, 8, output)?;
+        match (&variant.shape, content) {
+            (VariantShape::Unit, _) => {}
+            (VariantShape::Struct(fields), Some(content)) => {
+                push_indent(output, 6);
+                push_object_key(output, content);
+                output.push_str(": {\n");
+                for field in fields.iter().filter(|field| field_is_emitted(field)) {
+                    render_object_field(field, registry, config, ctx, 8, output)?;
+                }
+                push_indent(output, 6);
+                output.push_str("};\n");
             }
-            push_indent(output, 6);
-            output.push_str("};\n");
-        } else {
-            for field in fields.iter().filter(|field| field_is_emitted(field)) {
-                render_object_field(field, registry, config, ctx, 6, output)?;
+            (VariantShape::Struct(fields), None) => {
+                for field in fields.iter().filter(|field| field_is_emitted(field)) {
+                    render_object_field(field, registry, config, ctx, 6, output)?;
+                }
             }
+            (VariantShape::Newtype(ty), Some(content)) => {
+                push_indent(output, 6);
+                push_object_key(output, content);
+                output.push_str(": ");
+                let variant_field = variant_payload_field(def, variant, ty);
+                output.push_str(&render_type_ref(
+                    ty,
+                    None,
+                    registry,
+                    config,
+                    ctx,
+                    &variant_field,
+                )?);
+                output.push_str(";\n");
+            }
+            _ => return Err(unsupported_variant(def, variant)),
         }
 
         output.push_str("    }\n");
@@ -445,10 +461,13 @@ fn render_type_ref(
             "{} | null",
             render_type_ref(inner, int_repr, registry, config, ctx, field)?
         )),
-        TypeRef::Vec(inner) | TypeRef::Array { item: inner, .. } => Ok(format!(
+        TypeRef::Vec(inner) => Ok(format!(
             "Array<{}>",
             render_type_ref(inner, int_repr, registry, config, ctx, field)?
         )),
+        TypeRef::Array { item, len } => {
+            render_array_tuple(item, *len, int_repr, registry, config, ctx, field)
+        }
         TypeRef::Map { key, value } => {
             if !matches!(key.as_ref(), TypeRef::String) {
                 return Err(Diagnostic::error(
@@ -485,6 +504,23 @@ fn render_type_ref(
         .with_field(field.rust_name.to_string())
         .with_backend(BackendId::TypeScript)),
     }
+}
+
+fn render_array_tuple(
+    item: &TypeRef,
+    len: usize,
+    int_repr: Option<IntRepr>,
+    registry: &Registry,
+    config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
+    field: &FieldDef,
+) -> Result<String, Diagnostic> {
+    let item = render_type_ref(item, int_repr, registry, config, ctx, field)?;
+    if len == 0 {
+        return Ok("[]".to_owned());
+    }
+
+    Ok(format!("[{}]", vec![item; len].join(", ")))
 }
 
 fn render_primitive(
@@ -585,6 +621,16 @@ fn unsupported_variant(def: &EnumDef, variant: &VariantDef) -> Diagnostic {
         .with_type(def.export_name.clone())
         .with_variant(variant.rust_name.clone())
         .with_backend(BackendId::TypeScript)
+}
+
+fn variant_payload_field(def: &EnumDef, variant: &VariantDef, ty: &TypeRef) -> FieldDef {
+    FieldDef::new(
+        dto_bindgen_core::IdentName::new(format!("{}_{}", def.export_name, variant.rust_name)),
+        dto_bindgen_core::WireFieldNames::same("content"),
+        dto_bindgen_core::TargetFieldNames::new("content", "content"),
+        ty.clone(),
+        variant.source.clone(),
+    )
 }
 
 fn validate_type_names(registry: &Registry) -> Vec<Diagnostic> {
@@ -1045,6 +1091,108 @@ mod tests {
                 .contains("export type { Invoice } from \"./types\";")
         );
         assert!(!index.contents().contains("CoreMoney"));
+    }
+
+    #[test]
+    fn renders_fixed_arrays_as_tuples() {
+        let def = TypeDef::Struct(
+            dto_bindgen_core::StructDef::new("ColorRamp", "ColorRamp", span()).with_field(field(
+                "rgb",
+                "rgb",
+                TypeRef::array(TypeRef::Primitive(Primitive::U8), 3),
+            )),
+        );
+        let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "ColorRamp"), def)]);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let contents = find_file(&files, "types.ts").contents();
+
+        assert!(contents.contains("rgb: [number, number, number];"));
+    }
+
+    #[test]
+    fn renders_adjacent_tagged_newtype_unit_and_struct_variants() {
+        let mut registry = Registry::new();
+        let user_id = registry.register_type(
+            RustTypeId::new("sdk", "sdk", "UserProfile"),
+            TypeDef::Struct(
+                dto_bindgen_core::StructDef::new("UserProfile", "UserProfile", span())
+                    .with_field(field("user_id", "userId", TypeRef::String)),
+            ),
+        );
+        let event = TypeDef::Enum(
+            EnumDef::new(
+                "SdkEvent",
+                "SdkEvent",
+                EnumRepr::Adjacent {
+                    tag: "type".to_owned(),
+                    content: "payload".to_owned(),
+                },
+                span(),
+            )
+            .with_variant(VariantDef::new(
+                "UserCreated",
+                "userCreated",
+                VariantShape::Struct(vec![field("user", "user", TypeRef::named(user_id))]),
+                span(),
+            ))
+            .with_variant(VariantDef::new(
+                "UserDeleted",
+                "userDeleted",
+                VariantShape::Newtype(TypeRef::String),
+                span(),
+            ))
+            .with_variant(VariantDef::new("Ping", "ping", VariantShape::Unit, span())),
+        );
+        let event_id = registry.register_type(RustTypeId::new("sdk", "sdk", "SdkEvent"), event);
+        registry.add_dependency(event_id, user_id);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &Config::default())
+            .unwrap();
+        let contents = find_file(&files, "types.ts").contents();
+
+        assert!(contents.contains("\"type\": \"userCreated\";"));
+        assert!(contents.contains("payload: {"));
+        assert!(contents.contains("user: UserProfile;"));
+        assert!(contents.contains("\"type\": \"userDeleted\";"));
+        assert!(contents.contains("payload: string;"));
+        assert!(contents.contains("\"type\": \"ping\";"));
+    }
+
+    #[test]
+    fn rejects_unsupported_typescript_enum_shapes() {
+        let tuple_variant = TypeDef::Enum(
+            EnumDef::new(
+                "SdkEvent",
+                "SdkEvent",
+                EnumRepr::Adjacent {
+                    tag: "type".to_owned(),
+                    content: "payload".to_owned(),
+                },
+                span(),
+            )
+            .with_variant(VariantDef::new(
+                "Tuple",
+                "tuple",
+                VariantShape::Tuple(vec![TypeRef::String, TypeRef::String]),
+                span(),
+            )),
+        );
+        let registry =
+            registry_with_types([(RustTypeId::new("sdk", "sdk", "SdkEvent"), tuple_variant)]);
+
+        let diagnostics = TypeScriptBackend::new().validate(&registry, &Config::default());
+
+        assert_eq!(diagnostics[0].code, DiagnosticCode::new(304));
+        assert_eq!(diagnostics[0].backend, Some(BackendId::TypeScript));
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("typescript does not support adjacently tagged tuple variant")
+        );
     }
 
     #[test]
