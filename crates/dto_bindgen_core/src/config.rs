@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
@@ -16,6 +16,8 @@ pub struct Config {
     pub numeric: NumericConfig,
     pub typescript: TypeScriptConfig,
     pub python: PythonConfig,
+    #[serde(rename = "package")]
+    pub packages: Vec<PackageConfig>,
 }
 
 impl Default for Config {
@@ -26,6 +28,7 @@ impl Default for Config {
             numeric: NumericConfig::default(),
             typescript: TypeScriptConfig::default(),
             python: PythonConfig::default(),
+            packages: Vec::new(),
         }
     }
 }
@@ -55,6 +58,8 @@ impl Config {
         }
 
         validate_external_imports(&self.typescript.external_types)?;
+        validate_packages(&self.packages)?;
+        validate_package_graph(&self.packages)?;
 
         Ok(())
     }
@@ -237,6 +242,21 @@ pub enum UnknownFieldsPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct PackageConfig {
+    pub key: String,
+    pub rust_package: String,
+    pub rust_crate: String,
+    #[serde(rename = "npm")]
+    pub npm_name: String,
+    pub out_dir: String,
+    #[serde(default, deserialize_with = "deserialize_rust_type_ids")]
+    pub roots: Vec<RustTypeId>,
+    #[serde(default, rename = "external_type")]
+    pub external_types: Vec<ExternalTypeImportConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExternalTypeImportConfig {
     #[serde(deserialize_with = "deserialize_rust_type_id")]
     pub rust: RustTypeId,
@@ -250,6 +270,17 @@ where
 {
     let value = String::deserialize(deserializer)?;
     value.parse().map_err(serde::de::Error::custom)
+}
+
+fn deserialize_rust_type_ids<'de, D>(deserializer: D) -> Result<Vec<RustTypeId>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<String>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|value| value.parse().map_err(serde::de::Error::custom))
+        .collect()
 }
 
 #[derive(Debug)]
@@ -324,6 +355,139 @@ fn validate_external_imports(imports: &[ExternalTypeImportConfig]) -> Result<(),
     }
 
     Ok(())
+}
+
+fn validate_packages(packages: &[PackageConfig]) -> Result<(), ConfigError> {
+    let mut keys = BTreeSet::<String>::new();
+    let mut npm_names = BTreeSet::<String>::new();
+
+    for package in packages {
+        if package.key.is_empty() {
+            return Err(ConfigError::Validation(
+                "package key cannot be empty".to_owned(),
+            ));
+        }
+        if !keys.insert(package.key.clone()) {
+            return Err(ConfigError::Validation(format!(
+                "duplicate package key `{}`",
+                package.key
+            )));
+        }
+        if package.rust_package.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "package `{}` has empty rust_package",
+                package.key
+            )));
+        }
+        if package.rust_crate.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "package `{}` has empty rust_crate",
+                package.key
+            )));
+        }
+        if !is_valid_typescript_module_specifier(&package.npm_name) {
+            return Err(ConfigError::Validation(format!(
+                "package `{}` has invalid npm module specifier `{}`",
+                package.key, package.npm_name
+            )));
+        }
+        if !npm_names.insert(package.npm_name.clone()) {
+            return Err(ConfigError::Validation(format!(
+                "duplicate package npm module specifier `{}`",
+                package.npm_name
+            )));
+        }
+        if package.out_dir.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "package `{}` has empty out_dir",
+                package.key
+            )));
+        }
+        validate_external_imports(&package.external_types)?;
+    }
+
+    Ok(())
+}
+
+fn validate_package_graph(packages: &[PackageConfig]) -> Result<(), ConfigError> {
+    let package_by_npm = packages
+        .iter()
+        .map(|package| (package.npm_name.clone(), package.key.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut graph = packages
+        .iter()
+        .map(|package| (package.key.clone(), BTreeSet::<String>::new()))
+        .collect::<BTreeMap<_, _>>();
+
+    for package in packages {
+        for import in &package.external_types {
+            if let Some(dependency) = package_by_npm.get(&import.from) {
+                graph
+                    .entry(package.key.clone())
+                    .or_default()
+                    .insert(dependency.clone());
+            }
+        }
+    }
+
+    if let Some(cycle) = first_package_cycle(&graph) {
+        return Err(ConfigError::Validation(format!(
+            "package dependency cycle detected: {}",
+            cycle.join(" -> ")
+        )));
+    }
+
+    Ok(())
+}
+
+fn first_package_cycle(graph: &BTreeMap<String, BTreeSet<String>>) -> Option<Vec<String>> {
+    let mut visiting = BTreeSet::<String>::new();
+    let mut visited = BTreeSet::<String>::new();
+    let mut stack = Vec::<String>::new();
+
+    for package in graph.keys() {
+        if let Some(cycle) = visit_package(package, graph, &mut visiting, &mut visited, &mut stack)
+        {
+            return Some(cycle);
+        }
+    }
+
+    None
+}
+
+fn visit_package(
+    package: &str,
+    graph: &BTreeMap<String, BTreeSet<String>>,
+    visiting: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
+    stack: &mut Vec<String>,
+) -> Option<Vec<String>> {
+    if let Some(start) = stack.iter().position(|value| value == package) {
+        let mut cycle = stack[start..].to_vec();
+        cycle.push(package.to_owned());
+        return Some(cycle);
+    }
+    if visited.contains(package) {
+        return None;
+    }
+
+    visiting.insert(package.to_owned());
+    stack.push(package.to_owned());
+
+    if let Some(dependencies) = graph.get(package) {
+        for dependency in dependencies {
+            if visiting.contains(dependency) || !visited.contains(dependency) {
+                if let Some(cycle) = visit_package(dependency, graph, visiting, visited, stack) {
+                    return Some(cycle);
+                }
+            }
+        }
+    }
+
+    stack.pop();
+    visiting.remove(package);
+    visited.insert(package.to_owned());
+    None
 }
 
 fn is_valid_typescript_module_specifier(value: &str) -> bool {
@@ -524,6 +688,47 @@ from = ""
     }
 
     #[test]
+    fn parses_package_configs_with_external_imports() {
+        let config = Config::from_toml_str(
+            r#"
+[[package]]
+key = "events"
+rust_package = "radroots-events"
+rust_crate = "radroots_events"
+npm = "@radroots/event-bindings"
+out_dir = "packages/event-bindings/src/generated"
+roots = ["radroots-events:radroots_events::EventEnvelope"]
+
+[[package.external_type]]
+rust = "radroots-core:radroots_core::money::RadrootsCoreMoney"
+typescript = "RadrootsCoreMoney"
+from = "@radroots/core-bindings"
+"#,
+        )
+        .unwrap();
+
+        let package = &config.packages[0];
+        assert_eq!(package.key, "events");
+        assert_eq!(package.npm_name, "@radroots/event-bindings");
+        assert_eq!(package.roots[0].rust_ident, "EventEnvelope");
+        assert_eq!(package.external_types[0].typescript, "RadrootsCoreMoney");
+    }
+
+    #[test]
+    fn accepts_acyclic_package_graphs() {
+        let config = Config::from_toml_str(package_graph_config(false)).unwrap();
+
+        assert_eq!(config.packages.len(), 2);
+    }
+
+    #[test]
+    fn rejects_package_graph_cycles() {
+        let err = Config::from_toml_str(package_graph_config(true)).unwrap_err();
+
+        assert!(err.to_string().contains("package dependency cycle"));
+    }
+
+    #[test]
     fn parses_json_safe_large_integer_policy() {
         let config =
             Config::from_toml_str("[numeric]\nlarge_int_policy = \"json_number\"\n").unwrap();
@@ -559,5 +764,56 @@ from = ""
         std::fs::remove_file(&path).unwrap();
 
         assert_eq!(config.python.package, "sdk_dto");
+    }
+
+    fn package_graph_config(with_cycle: bool) -> &'static str {
+        if with_cycle {
+            r#"
+[[package]]
+key = "core"
+rust_package = "radroots-core"
+rust_crate = "radroots_core"
+npm = "@radroots/core-bindings"
+out_dir = "packages/core-bindings/src/generated"
+
+[[package.external_type]]
+rust = "radroots-events:radroots_events::EventEnvelope"
+typescript = "EventEnvelope"
+from = "@radroots/event-bindings"
+
+[[package]]
+key = "events"
+rust_package = "radroots-events"
+rust_crate = "radroots_events"
+npm = "@radroots/event-bindings"
+out_dir = "packages/event-bindings/src/generated"
+
+[[package.external_type]]
+rust = "radroots-core:radroots_core::money::RadrootsCoreMoney"
+typescript = "RadrootsCoreMoney"
+from = "@radroots/core-bindings"
+"#
+        } else {
+            r#"
+[[package]]
+key = "core"
+rust_package = "radroots-core"
+rust_crate = "radroots_core"
+npm = "@radroots/core-bindings"
+out_dir = "packages/core-bindings/src/generated"
+
+[[package]]
+key = "events"
+rust_package = "radroots-events"
+rust_crate = "radroots_events"
+npm = "@radroots/event-bindings"
+out_dir = "packages/event-bindings/src/generated"
+
+[[package.external_type]]
+rust = "radroots-core:radroots_core::money::RadrootsCoreMoney"
+typescript = "RadrootsCoreMoney"
+from = "@radroots/core-bindings"
+"#
+        }
     }
 }
