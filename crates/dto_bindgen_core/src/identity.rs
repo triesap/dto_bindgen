@@ -37,22 +37,39 @@ impl RustTypeId {
         crate_name: impl Into<String>,
         rust_ident: impl Into<String>,
     ) -> Self {
+        let package_name = package_name.into();
+        let crate_name = crate_name.into();
+        let rust_ident = rust_ident.into();
+
+        assert!(!package_name.is_empty(), "package name cannot be empty");
+        assert!(
+            is_rust_identifier(&crate_name),
+            "crate name must be a Rust identifier"
+        );
+        assert!(
+            is_rust_identifier(&rust_ident),
+            "Rust type identifier must be a Rust identifier"
+        );
+
         Self {
-            package_name: package_name.into(),
-            crate_name: crate_name.into(),
+            package_name,
+            crate_name,
             module_path: Vec::new(),
-            rust_ident: rust_ident.into(),
+            rust_ident,
             generic_parameters: Vec::new(),
         }
     }
 
-    pub fn package_local(package_name: impl Into<String>, rust_ident: impl Into<String>) -> Self {
-        let package_name = package_name.into();
-        Self::new(package_name.clone(), package_name, rust_ident)
-    }
-
     pub fn with_module_path(mut self, module_path: impl IntoIterator<Item = String>) -> Self {
-        self.module_path = module_path.into_iter().collect();
+        self.module_path = module_path
+            .into_iter()
+            .inspect(|module| {
+                assert!(
+                    is_rust_identifier(module),
+                    "module path segment must be a Rust identifier"
+                );
+            })
+            .collect();
         self
     }
 
@@ -60,7 +77,15 @@ impl RustTypeId {
         mut self,
         generic_parameters: impl IntoIterator<Item = String>,
     ) -> Self {
-        self.generic_parameters = generic_parameters.into_iter().collect();
+        self.generic_parameters = generic_parameters
+            .into_iter()
+            .inspect(|generic| {
+                assert!(
+                    is_rust_identifier(generic),
+                    "generic parameter must be a Rust identifier"
+                );
+            })
+            .collect();
         self
     }
 }
@@ -281,14 +306,37 @@ mod tests {
     }
 
     #[test]
-    fn constructs_package_local_identity() {
-        let rust_id = RustTypeId::package_local("sdk_bindings", "UserProfile");
+    fn constructs_identity_with_distinct_package_and_crate_names() {
+        let rust_id = RustTypeId::new("radroots-sdk", "radroots_sdk", "UserProfile");
 
-        assert_eq!(rust_id.package_name, "sdk_bindings");
-        assert_eq!(rust_id.crate_name, "sdk_bindings");
+        assert_eq!(rust_id.package_name, "radroots-sdk");
+        assert_eq!(rust_id.crate_name, "radroots_sdk");
         assert!(rust_id.module_path.is_empty());
         assert_eq!(rust_id.rust_ident, "UserProfile");
         assert!(rust_id.generic_parameters.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_constructed_rust_type_identity() {
+        assert!(
+            std::panic::catch_unwind(|| RustTypeId::new(
+                "radroots-sdk",
+                "radroots-sdk",
+                "UserProfile"
+            ))
+            .is_err()
+        );
+        assert!(std::panic::catch_unwind(|| RustTypeId::new("sdk", "sdk", "9Profile")).is_err());
+        assert!(
+            std::panic::catch_unwind(|| RustTypeId::new("sdk", "sdk", "Profile")
+                .with_module_path(["bad-module".to_owned()]))
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(|| RustTypeId::new("sdk", "sdk", "Profile")
+                .with_generic_parameters(["bad-generic".to_owned()]))
+            .is_err()
+        );
     }
 
     #[test]
