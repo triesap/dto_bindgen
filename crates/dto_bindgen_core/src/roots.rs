@@ -126,13 +126,23 @@ fn render_root_module_contents(roots: &[GeneratedRoot]) -> String {
     );
     contents.push_str("    ::std::vec![\n");
     for root in roots {
-        contents.push_str("        ::dto_bindgen::export::RootDescriptor::new::<");
-        contents.push_str(&root.type_path);
-        contents.push_str(">(),\n");
+        contents.push_str(&render_root_descriptor(&root.type_path));
     }
     contents.push_str("    ]\n");
     contents.push_str("}\n");
     contents
+}
+
+fn render_root_descriptor(type_path: &str) -> String {
+    let prefix = "        ::dto_bindgen::export::RootDescriptor::new::<";
+    let single_line = format!("{prefix}{type_path}>(),\n");
+    if single_line.trim_end().chars().count() <= 100 {
+        single_line
+    } else if format!("{prefix}{type_path}>(").chars().count() <= 101 {
+        format!("{prefix}{type_path}>(\n        ),\n")
+    } else {
+        format!("{prefix}\n            {type_path},\n        >(),\n")
+    }
 }
 
 fn root_type_path(module_path: &[String], rust_name: &str) -> String {
@@ -353,6 +363,41 @@ mod tests {
             "::dto_bindgen::export::RootDescriptor::new::<crate::events::user::UserEvent>()"
         ));
         assert!(!module.contents.contains("InternalUserState"));
+    }
+
+    #[test]
+    fn renders_long_root_type_paths_in_rustfmt_stable_shape() {
+        let threshold = scan_rust_source(
+            "src/discount.rs",
+            r#"
+            #[derive(Dto)]
+            #[dto(export)]
+            struct RadrootsCoreDiscountThreshold {
+                amount: String,
+            }
+            "#,
+        )
+        .unwrap();
+        let quantity_price = scan_rust_source(
+            "src/quantity_price.rs",
+            r#"
+            #[derive(Dto)]
+            #[dto(export)]
+            struct RadrootsCoreQuantityPrice {
+                amount: String,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let module = generate_root_module(&config(), &[threshold, quantity_price]).unwrap();
+
+        assert!(module.contents.contains(
+            "        ::dto_bindgen::export::RootDescriptor::new::<crate::discount::RadrootsCoreDiscountThreshold>(\n        ),\n"
+        ));
+        assert!(module.contents.contains(
+            "        ::dto_bindgen::export::RootDescriptor::new::<\n            crate::quantity_price::RadrootsCoreQuantityPrice,\n        >(),\n"
+        ));
     }
 
     #[test]
