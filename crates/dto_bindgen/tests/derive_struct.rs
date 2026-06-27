@@ -72,6 +72,13 @@ struct OptionalAttachment {
 
 #[allow(dead_code)]
 #[derive(Dto)]
+struct FieldOverrideManifest {
+    #[dto(ts(type = "ReadonlyArray<string>"))]
+    tags: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Dto)]
 struct PresenceDefaults {
     display_name: Option<String>,
     #[serde(default)]
@@ -304,6 +311,43 @@ fn dto_bytes_base64_supports_optional_vec_u8() {
     let generated = config_path.parent().unwrap().join("generated/ts/types.ts");
     let contents = std::fs::read_to_string(generated).unwrap();
     assert!(contents.contains("payload?: string | null;"));
+
+    cleanup_config(&config_path);
+}
+
+#[test]
+fn dto_ts_type_overrides_field_typescript_output() {
+    let config_path = temp_config(
+        r#"
+[python]
+enabled = false
+"#,
+    );
+
+    let report = dto_bindgen::export_types!(
+        config = config_path.as_path(),
+        roots = [FieldOverrideManifest],
+    )
+    .unwrap();
+
+    let root = *report.registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Struct(def) = report.registry.type_def(root).unwrap()
+    else {
+        panic!("expected manifest struct");
+    };
+    let tags = struct_field(def, "tags").unwrap();
+    let dto_bindgen::__private::TypeRef::Override(override_type) = &tags.ty else {
+        panic!("expected TypeScript field override");
+    };
+    assert_eq!(
+        override_type.backend,
+        dto_bindgen::__private::BackendId::TypeScript
+    );
+    assert_eq!(override_type.target_type, "ReadonlyArray<string>");
+
+    let generated = config_path.parent().unwrap().join("generated/ts/types.ts");
+    let contents = std::fs::read_to_string(generated).unwrap();
+    assert!(contents.contains("tags: ReadonlyArray<string>;"));
 
     cleanup_config(&config_path);
 }

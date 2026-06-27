@@ -114,8 +114,12 @@ fn expand_enum(
                         .rename
                         .unwrap_or_else(|| container_attrs.rename_variant_field(&rust_name));
                     let ty = field.ty;
-                    let field_ty_expr =
-                        type_ref_expr_tokens(&ty, field_attrs.dto_as, field_attrs.bytes_repr)?;
+                    let field_ty_expr = type_ref_expr_tokens(
+                        &ty,
+                        field_attrs.dto_as,
+                        field_attrs.bytes_repr,
+                        field_attrs.ts_type,
+                    )?;
                     let field_expr = field_def_tokens(FieldDefTokens {
                         field_var: &field_var,
                         rust_name: &rust_name,
@@ -166,8 +170,12 @@ fn expand_enum(
                     ));
                 }
                 let ty = field.ty;
-                let ty_expr =
-                    type_ref_expr_tokens(&ty, field_attrs.dto_as, field_attrs.bytes_repr)?;
+                let ty_expr = type_ref_expr_tokens(
+                    &ty,
+                    field_attrs.dto_as,
+                    field_attrs.bytes_repr,
+                    field_attrs.ts_type,
+                )?;
 
                 variant_tokens.push(quote! {
                     let __dto_bindgen_variant_ty = #ty_expr;
@@ -350,6 +358,7 @@ fn expand_struct(
         let ty = field.ty;
         let dto_as = field_attrs.dto_as;
         let bytes_repr = field_attrs.bytes_repr;
+        let ts_type = field_attrs.ts_type;
 
         let field_expr = field_def_tokens(FieldDefTokens {
             field_var: &field_var,
@@ -361,7 +370,7 @@ fn expand_struct(
             skip_serializing_if: field_attrs.skip_serializing_if,
             source: field_source,
         })?;
-        let field_ty_expr = type_ref_expr_tokens(&ty, dto_as, bytes_repr)?;
+        let field_ty_expr = type_ref_expr_tokens(&ty, dto_as, bytes_repr, ts_type)?;
         field_tokens.push(quote! {
             let #field_var = #field_ty_expr;
             __dto_bindgen_def = __dto_bindgen_def.with_field(#field_expr);
@@ -455,7 +464,12 @@ fn expand_transparent_struct(
         ));
     }
     let ty = field.ty;
-    let ty_expr = type_ref_expr_tokens(&ty, field_attrs.dto_as, field_attrs.bytes_repr)?;
+    let ty_expr = type_ref_expr_tokens(
+        &ty,
+        field_attrs.dto_as,
+        field_attrs.bytes_repr,
+        field_attrs.ts_type,
+    )?;
 
     Ok(quote! {
         impl ::dto_bindgen::Dto for #ident {
@@ -590,6 +604,7 @@ struct FieldAttrs {
     int_repr: Option<IntReprAttr>,
     dto_as: Option<DtoAsAttr>,
     bytes_repr: Option<BytesReprAttr>,
+    ts_type: Option<String>,
 }
 
 impl FieldAttrs {
@@ -618,6 +633,17 @@ impl FieldAttrs {
                         parsed.bytes_repr =
                             Some(BytesReprAttr::parse(&parse_string_value(&meta)?, &meta)?);
                         Ok(())
+                    } else if meta.path.is_ident("ts") {
+                        meta.parse_nested_meta(|meta| {
+                            if meta.path.is_ident("type") {
+                                parsed.ts_type = Some(parse_string_value(&meta)?);
+                                Ok(())
+                            } else {
+                                Err(meta.error(
+                                    "dto field ts mapping supports only dto(ts(type = \"...\"))",
+                                ))
+                            }
+                        })
                     } else {
                         Err(meta.error("unsupported dto field attribute for `Dto` derive"))
                     }
@@ -669,6 +695,17 @@ impl FieldAttrs {
             })?;
         }
 
+        if parsed.ts_type.is_some()
+            && (parsed.dto_as.is_some() || parsed.bytes_repr.is_some() || parsed.int_repr.is_some())
+        {
+            return Err(syn::Error::new_spanned(
+                attrs
+                    .first()
+                    .expect("ts_type is parsed only when attrs are present"),
+                "dto(ts(type = \"...\")) cannot be combined with dto(as), dto(bytes), dto(int), or dto(int_repr)",
+            ));
+        }
+
         Ok(parsed)
     }
 }
@@ -677,11 +714,23 @@ fn type_ref_expr_tokens(
     ty: &Type,
     dto_as: Option<DtoAsAttr>,
     bytes_repr: Option<BytesReprAttr>,
+    ts_type: Option<String>,
 ) -> syn::Result<proc_macro2::TokenStream> {
     if dto_as.is_some() && bytes_repr.is_some() {
         return Err(syn::Error::new_spanned(
             ty,
             "dto(as = \"...\") and dto(bytes = \"...\") cannot be combined",
+        ));
+    }
+
+    if let Some(target_type) = ts_type {
+        return Ok(quote!(
+            ::dto_bindgen::__private::TypeRef::Override(
+                ::dto_bindgen::__private::TargetOverride::new(
+                    ::dto_bindgen::__private::BackendId::TypeScript,
+                    #target_type,
+                )
+            )
         ));
     }
 
@@ -1223,6 +1272,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_container_typescript_type_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            #[dto(ts(type = "Mf2WebManifest"))]
+            struct Manifest {
+                schema: u32,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("container attribute"));
+    }
+
+    #[test]
     fn accepts_enum_typescript_name_attrs() {
         let input: DeriveInput = syn::parse_quote! {
             #[dto(ts(name = "Mf2ArgType"))]
@@ -1326,6 +1389,51 @@ mod tests {
 
         assert!(tokens.contains("TypeRef :: String"));
         assert!(!tokens.contains("< Decimal as :: dto_bindgen :: Dto >"));
+    }
+
+    #[test]
+    fn supports_field_level_typescript_type_override() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Manifest {
+                #[dto(ts(type = "ReadonlyArray<string>"))]
+                tags: Vec<String>,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("TypeRef :: Override"));
+        assert!(tokens.contains("BackendId :: TypeScript"));
+        assert!(tokens.contains("ReadonlyArray<string>"));
+        assert!(!tokens.contains("< Vec < String > as :: dto_bindgen :: Dto >"));
+    }
+
+    #[test]
+    fn rejects_field_level_typescript_name_attrs() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Manifest {
+                #[dto(ts(name = "Tags"))]
+                tags: Vec<String>,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("field ts mapping"));
+    }
+
+    #[test]
+    fn rejects_mixed_field_typescript_type_override_mappings() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Manifest {
+                #[dto(ts(type = "string"), as = "string")]
+                id: Uuid,
+            }
+        };
+
+        let err = expand_dto(input).unwrap_err();
+
+        assert!(err.to_string().contains("cannot be combined"));
     }
 
     #[test]

@@ -1359,7 +1359,9 @@ fn meta_children(meta: &Meta) -> syn::Result<Vec<Meta>> {
 }
 
 fn repair_meta_keyword_tokens(tokens: &str) -> Option<String> {
-    let repaired = tokens.replace("as =", "r#as =");
+    let repaired = tokens
+        .replace("as =", "r#as =")
+        .replace("type =", "r#type =");
     (repaired != tokens).then_some(repaired)
 }
 
@@ -1429,6 +1431,7 @@ fn attr_supported(namespace: &str, scope: AttrScope, meta: &Meta) -> bool {
             Some("json_string" | "json_number")
         ),
         ("dto", AttrScope::Field, "bytes") => meta_value(meta).as_deref() == Some("base64"),
+        ("dto", AttrScope::Field, "ts") => dto_ts_type_supported(meta),
         ("dto", AttrScope::Variant, "rename") => !matches!(meta, Meta::List(_)),
         _ => false,
     }
@@ -1441,6 +1444,18 @@ fn dto_ts_name_supported(meta: &Meta) -> bool {
     children.len() == 1
         && children.iter().all(|child| {
             meta_path(child) == "name"
+                && matches!(child, Meta::NameValue(_))
+                && meta_value(child).is_some()
+        })
+}
+
+fn dto_ts_type_supported(meta: &Meta) -> bool {
+    let Ok(children) = meta_children(meta) else {
+        return false;
+    };
+    children.len() == 1
+        && children.iter().all(|child| {
+            meta_path(child) == "type"
                 && matches!(child, Meta::NameValue(_))
                 && meta_value(child).is_some()
         })
@@ -1789,6 +1804,8 @@ mod tests {
                 payload: Vec<u8>,
                 #[dto(bytes = "base64")]
                 optional_payload: Option<Vec<u8>>,
+                #[dto(ts(type = "ReadonlyArray<string>"))]
+                tags: Vec<String>,
             }
         "#;
 
