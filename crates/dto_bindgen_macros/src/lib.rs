@@ -5,6 +5,7 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
     Attribute, Data, DataEnum, DeriveInput, Fields, Ident, LitStr, Token, Type, parse_macro_input,
+    spanned::Spanned,
 };
 
 #[proc_macro_derive(Dto, attributes(dto, serde))]
@@ -50,11 +51,13 @@ fn expand_enum(
         ));
     }
     let enum_repr = enum_repr_tokens(&container_attrs, &data)?;
+    let enum_source = source_span_tokens(&ident);
     let mut variant_tokens = Vec::new();
 
     for (variant_index, variant) in data.variants.into_iter().enumerate() {
         let variant_attrs = VariantAttrs::parse(&variant.attrs)?;
         let rust_name = variant.ident.to_string();
+        let variant_source = source_span_tokens(&variant.ident);
         if container_attrs.dto_as == Some(DtoAsAttr::StringEnum) && variant_attrs.rename.is_none() {
             return Err(syn::Error::new_spanned(
                 variant.ident,
@@ -73,7 +76,7 @@ fn expand_enum(
                             #rust_name,
                             #wire_name,
                             ::dto_bindgen::__private::VariantShape::Unit,
-                            ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
+                            #variant_source,
                         ),
                     );
                 });
@@ -106,6 +109,7 @@ fn expand_enum(
                         "__dto_bindgen_variant_{variant_index}_field_ty_{field_index}"
                     );
                     let rust_name = clean_ident(&field_ident);
+                    let field_source = source_span_tokens(&field_ident);
                     let wire_name = field_attrs
                         .rename
                         .unwrap_or_else(|| container_attrs.rename_variant_field(&rust_name));
@@ -118,6 +122,7 @@ fn expand_enum(
                         field_attrs.int_repr,
                         field_attrs.default,
                         field_attrs.skip_serializing_if,
+                        field_source,
                     )?;
 
                     field_tokens.push(quote! {
@@ -134,7 +139,7 @@ fn expand_enum(
                             #rust_name,
                             #wire_name,
                             ::dto_bindgen::__private::VariantShape::Struct(#variant_fields_var),
-                            ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
+                            #variant_source,
                         ),
                     );
                 });
@@ -168,7 +173,7 @@ fn expand_enum(
                             #rust_name,
                             #wire_name,
                             ::dto_bindgen::__private::VariantShape::Newtype(__dto_bindgen_variant_ty),
-                            ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
+                            #variant_source,
                         ),
                     );
                 });
@@ -188,7 +193,7 @@ fn expand_enum(
                 ctx: &mut ::dto_bindgen::__private::DescribeCtx,
             ) -> ::dto_bindgen::__private::TypeRef {
                 let __dto_bindgen_source =
-                    ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!());
+                    #enum_source;
                 let mut __dto_bindgen_def =
                     ::dto_bindgen::__private::EnumDef::new(
                         stringify!(#ident),
@@ -335,6 +340,7 @@ fn expand_struct(
 
         let field_var = format_ident!("__dto_bindgen_field_ty_{index}");
         let rust_name = clean_ident(&field_ident);
+        let field_source = source_span_tokens(&field_ident);
         let wire_name = field_attrs
             .rename
             .unwrap_or_else(|| container_attrs.rename_field(&rust_name));
@@ -349,6 +355,7 @@ fn expand_struct(
             field_attrs.int_repr,
             field_attrs.default || container_attrs.default,
             field_attrs.skip_serializing_if,
+            field_source,
         )?;
         let field_ty_expr = type_ref_expr_tokens(&ty, dto_as)?;
         field_tokens.push(quote! {
@@ -365,6 +372,7 @@ fn expand_struct(
     let rename_all_attr = option_string_tokens(container_attrs.rename_all.as_deref());
     let ts_name_attr = option_string_tokens(container_attrs.ts_name.as_deref());
     let deny_unknown_fields = container_attrs.deny_unknown_fields;
+    let struct_source = source_span_tokens(&ident);
 
     Ok(quote! {
         impl ::dto_bindgen::Dto for #ident {
@@ -372,7 +380,7 @@ fn expand_struct(
                 ctx: &mut ::dto_bindgen::__private::DescribeCtx,
             ) -> ::dto_bindgen::__private::TypeRef {
                 let __dto_bindgen_source =
-                    ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!());
+                    #struct_source;
                 let mut __dto_bindgen_def =
                     ::dto_bindgen::__private::StructDef::new(
                         stringify!(#ident),
@@ -464,6 +472,7 @@ fn field_def_tokens(
     int_repr: Option<IntReprAttr>,
     serde_default: bool,
     skip_serializing_if: Option<String>,
+    source: proc_macro2::TokenStream,
 ) -> syn::Result<proc_macro2::TokenStream> {
     let int_repr_tokens = int_repr
         .map(|value| {
@@ -479,7 +488,7 @@ fn field_def_tokens(
             ::dto_bindgen::__private::WireFieldNames::same(#wire_name),
             ::dto_bindgen::__private::TargetFieldNames::new(#wire_name, #rust_name),
             #field_var,
-            ::dto_bindgen::__private::SourceSpan::new(file!(), line!(), column!()),
+            #source,
         )#presence_tokens #int_repr_tokens
     })
 }
@@ -1028,6 +1037,25 @@ fn option_string_tokens(value: Option<&str>) -> proc_macro2::TokenStream {
     }
 }
 
+fn source_span_tokens<T>(node: &T) -> proc_macro2::TokenStream
+where
+    T: Spanned,
+{
+    let span = node.span();
+    let start = span.start();
+    let end = span.end();
+    let file = span.file();
+    let start_line = start.line as u32;
+    let start_column = start.column as u32;
+    let end_line = end.line as u32;
+    let end_column = end.column as u32;
+
+    quote!(
+        ::dto_bindgen::__private::SourceSpan::new(#file, #start_line, #start_column)
+            .with_end(#end_line, #end_column)
+    )
+}
+
 fn clean_ident(ident: &Ident) -> String {
     let raw = ident.to_string();
     raw.strip_prefix("r#").unwrap_or(&raw).to_owned()
@@ -1136,6 +1164,23 @@ mod tests {
         let tokens = expand_dto(input).expect("expand");
 
         assert!(tokens.to_string().contains("UserProfile"));
+    }
+
+    #[test]
+    fn emits_concrete_source_spans() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct UserProfile {
+                id: String,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("SourceSpan :: new"));
+        assert!(tokens.contains("with_end"));
+        assert!(!tokens.contains("file !"));
+        assert!(!tokens.contains("line !"));
+        assert!(!tokens.contains("column !"));
     }
 
     #[test]
