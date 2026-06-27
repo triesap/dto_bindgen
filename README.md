@@ -41,8 +41,8 @@ root_module_file = "src/generated/dto_roots.rs"
 ```
 
 ```sh
-dto_bindgen export --config dto_bindgen.toml
-dto_bindgen check --config dto_bindgen.toml
+dto_bindgen roots --config dto_bindgen.toml
+dto_bindgen roots-check --config dto_bindgen.toml
 ```
 
 Then include the generated module from a test, xtask, or export binary and call the normal compiled export path:
@@ -61,7 +61,7 @@ fn main() -> Result<(), dto_bindgen::export::ExportError> {
 }
 ```
 
-Compiled exports remain explicit because Rust trait descriptors must be type checked by Rust. The CLI scans only configured source files and produces/checks the generated root module.
+Compiled exports remain explicit because Rust trait descriptors must be type checked by Rust. The `roots` CLI scans only configured source files and produces/checks the generated root module; backend exports still run through a compiled root harness.
 
 ## Configuration
 
@@ -118,15 +118,15 @@ The CLI is a helper for config, source-manifest root generation/checking, invent
 ```sh
 cargo run -p dto_bindgen_cli -- --help
 cargo run -p dto_bindgen_cli -- config --config dto_bindgen.toml
-cargo run -p dto_bindgen_cli -- export --config dto_bindgen.toml
-cargo run -p dto_bindgen_cli -- check --config dto_bindgen.toml
+cargo run -p dto_bindgen_cli -- roots --config dto_bindgen.toml
+cargo run -p dto_bindgen_cli -- roots-check --config dto_bindgen.toml
 cargo run -p dto_bindgen_cli -- clean --config dto_bindgen.toml
 cargo run -p dto_bindgen_cli -- inventory --manifest dto_bindgen.inventory.toml \
   --json-out docs/implementation/reports/sdk_inventory_pilot.json \
   --markdown-out docs/implementation/reports/sdk_inventory_pilot.md
 ```
 
-Use a test, xtask, or small export binary that calls `dto_bindgen::export::export_with_roots` with the generated root module for backend rendering. Inventory and root discovery use explicit source inputs from manifests; the CLI does not scan every Rust root automatically.
+Use a test, xtask, or small export binary that calls `dto_bindgen::export::export_with_roots` with the generated root module for backend rendering. Inventory and root discovery use explicit source inputs from manifests; the CLI does not scan every Rust root automatically, and `export`/`check` are reserved for compiled-root backend workflows.
 
 ## Supported MVP Shape
 

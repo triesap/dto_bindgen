@@ -111,11 +111,25 @@ fn run_command(options: CliOptions, stdout: &mut String, stderr: &mut String) ->
             }
         },
         Command::Inventory => run_inventory(&options, stdout, stderr),
-        Command::Export | Command::Check | Command::Diagnostics => {
+        Command::Export | Command::Check => {
+            match dto_bindgen::config::Config::from_toml_path(&options.config_path) {
+                Ok(_) => report_explicit_roots_required(&options, stderr),
+                Err(source) => {
+                    writeln!(stderr, "error: {source}").expect("writing to a String cannot fail");
+                    1
+                }
+            }
+        }
+        Command::Roots | Command::RootsCheck | Command::Diagnostics => {
             match dto_bindgen::config::Config::from_toml_path(&options.config_path) {
                 Ok(config) => match config.root_discovery.mode {
-                    dto_bindgen::config::RootDiscoveryMode::Explicit => {
+                    dto_bindgen::config::RootDiscoveryMode::Explicit
+                        if options.command == Command::Diagnostics =>
+                    {
                         report_explicit_roots_required(&options, stderr)
+                    }
+                    dto_bindgen::config::RootDiscoveryMode::Explicit => {
+                        report_source_manifest_required(&options, stderr)
                     }
                     dto_bindgen::config::RootDiscoveryMode::SourceManifest => {
                         run_source_manifest_command(&options, &config, stdout, stderr)
@@ -148,6 +162,8 @@ enum Command {
     Config,
     Export,
     Check,
+    Roots,
+    RootsCheck,
     Clean,
     Inventory,
     Diagnostics,
@@ -161,6 +177,8 @@ impl Command {
             Self::Config => "config",
             Self::Export => "export",
             Self::Check => "check",
+            Self::Roots => "roots",
+            Self::RootsCheck => "roots-check",
             Self::Clean => "clean",
             Self::Inventory => "inventory",
             Self::Diagnostics => "diagnostics",
@@ -179,6 +197,8 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         "config" => Command::Config,
         "export" => Command::Export,
         "check" => Command::Check,
+        "roots" => Command::Roots,
+        "roots-check" => Command::RootsCheck,
         "clean" => Command::Clean,
         "inventory" => Command::Inventory,
         "diagnostics" => Command::Diagnostics,
@@ -281,13 +301,17 @@ fn help_text() -> &'static str {
         "  dto_bindgen config [--config <path>]\n",
         "  dto_bindgen export [--config <path>]\n",
         "  dto_bindgen check [--config <path>]\n",
+        "  dto_bindgen roots [--config <path>]\n",
+        "  dto_bindgen roots-check [--config <path>]\n",
         "  dto_bindgen clean [--config <path>]\n",
         "  dto_bindgen inventory [--manifest <path>] [--json-out <path>] [--markdown-out <path>]\n",
         "  dto_bindgen diagnostics [--config <path>] [--json]\n\n",
         "Commands:\n",
         "  config       Load and summarize dto_bindgen.toml without exporting.\n",
-        "  export       Write generated roots for source_manifest configs.\n",
-        "  check        Check generated roots for source_manifest configs.\n",
+        "  export       Requires compiled explicit root descriptors and writes backend output.\n",
+        "  check        Requires compiled explicit root descriptors and checks backend output.\n",
+        "  roots        Write generated Rust root modules for source_manifest configs.\n",
+        "  roots-check  Check generated Rust root modules for source_manifest configs.\n",
         "  clean        Remove files listed in the previous generated manifest.\n",
         "  inventory    Scan explicit SDK source inputs and write JSON/Markdown reports.\n",
         "  diagnostics  Report explicit-root or source-manifest diagnostics.\n\n",
@@ -297,7 +321,10 @@ fn help_text() -> &'static str {
         "  mode = \"source_manifest\"\n",
         "  source_files = [\"src/lib.rs\"]\n",
         "  root_module_file = \"src/generated/dto_roots.rs\"\n\n",
-        "Explicit root export example:\n",
+        "Generated roots:\n",
+        "  dto_bindgen roots --config dto_bindgen.toml\n",
+        "  dto_bindgen roots-check --config dto_bindgen.toml\n\n",
+        "Compiled export example:\n",
         "  dto_bindgen::export_types!(config = \"dto_bindgen.toml\", roots = [UserProfile, SdkEvent])\n",
     )
 }
@@ -402,8 +429,8 @@ fn run_source_manifest_command(
 ) -> i32 {
     match build_source_manifest_roots(options, config) {
         Ok(root_module) => match options.command {
-            Command::Export => write_source_manifest_roots(&root_module, stdout, stderr),
-            Command::Check => check_source_manifest_roots(&root_module, stdout, stderr),
+            Command::Roots => write_source_manifest_roots(&root_module, stdout, stderr),
+            Command::RootsCheck => check_source_manifest_roots(&root_module, stdout, stderr),
             Command::Diagnostics => {
                 report_source_manifest_diagnostics(options, &root_module, stdout);
                 0
@@ -411,6 +438,8 @@ fn run_source_manifest_command(
             Command::Help
             | Command::Version
             | Command::Config
+            | Command::Export
+            | Command::Check
             | Command::Clean
             | Command::Inventory => {
                 unreachable!("source manifest routing is limited to export/check/diagnostics")
@@ -581,7 +610,33 @@ fn report_explicit_roots_required(options: &CliOptions, stderr: &mut String) -> 
         .expect("writing to a String cannot fail");
         writeln!(
             stderr,
-            "hint: the standalone CLI does not discover Rust roots in the MVP"
+            "hint: generate source-manifest root modules with `dto_bindgen roots --config {}` before compiled exports",
+            options.config_path.display()
+        )
+        .expect("writing to a String cannot fail");
+    }
+    2
+}
+
+fn report_source_manifest_required(options: &CliOptions, stderr: &mut String) -> i32 {
+    if options.json {
+        writeln!(
+            stderr,
+            "{{\"error\":\"source_manifest_required\",\"command\":\"{}\",\"config\":\"{}\"}}",
+            options.command.as_str(),
+            escape_json(&options.config_path.display().to_string())
+        )
+        .expect("writing to a String cannot fail");
+    } else {
+        writeln!(
+            stderr,
+            "error: dto_bindgen {} requires root_discovery.mode = \"source_manifest\"",
+            options.command.as_str()
+        )
+        .expect("writing to a String cannot fail");
+        writeln!(
+            stderr,
+            "hint: use dto_bindgen export/check from a compiled root harness for backend output"
         )
         .expect("writing to a String cannot fail");
     }
@@ -630,6 +685,7 @@ mod tests {
         assert!(stderr.is_empty());
         assert!(stdout.contains("Usage:"));
         assert!(stdout.contains("source manifests"));
+        assert!(stdout.contains("dto_bindgen roots"));
     }
 
     #[test]
@@ -671,6 +727,16 @@ mod tests {
             options.inventory_markdown_path,
             Some(PathBuf::from("report.md"))
         );
+    }
+
+    #[test]
+    fn parses_root_module_commands() {
+        let roots = parse_args(&["roots".to_owned(), "--config=custom.toml".to_owned()]).unwrap();
+        let roots_check =
+            parse_args(&["roots-check".to_owned(), "--config=custom.toml".to_owned()]).unwrap();
+
+        assert_eq!(roots.command, Command::Roots);
+        assert_eq!(roots_check.command, Command::RootsCheck);
     }
 
     #[test]
@@ -729,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn export_command_writes_source_manifest_root_module() {
+    fn export_command_with_source_manifest_still_requires_compiled_roots() {
         let root = temp_project();
         let config_path = write_source_manifest_project(&root);
         let generated_roots = root.join("src/generated/dto_roots.rs");
@@ -739,6 +805,33 @@ mod tests {
         let code = run(
             vec![
                 "export".to_owned(),
+                "--config".to_owned(),
+                config_path.display().to_string(),
+            ],
+            &mut stdout,
+            &mut stderr,
+        );
+
+        assert_eq!(code, 2);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("requires explicit root descriptors"));
+        assert!(stderr.contains("dto_bindgen roots"));
+        assert!(!generated_roots.exists());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn roots_command_writes_source_manifest_root_module() {
+        let root = temp_project();
+        let config_path = write_source_manifest_project(&root);
+        let generated_roots = root.join("src/generated/dto_roots.rs");
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        let code = run(
+            vec![
+                "roots".to_owned(),
                 "--config".to_owned(),
                 config_path.display().to_string(),
             ],
@@ -762,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn check_command_reports_missing_source_manifest_root_module_without_writing() {
+    fn roots_check_command_reports_missing_source_manifest_root_module_without_writing() {
         let root = temp_project();
         let config_path = write_source_manifest_project(&root);
         let generated_roots = root.join("src/generated/dto_roots.rs");
@@ -771,7 +864,7 @@ mod tests {
 
         let code = run(
             vec![
-                "check".to_owned(),
+                "roots-check".to_owned(),
                 "--config".to_owned(),
                 config_path.display().to_string(),
             ],
@@ -788,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn check_command_accepts_current_source_manifest_root_module() {
+    fn roots_check_command_accepts_current_source_manifest_root_module() {
         let root = temp_project();
         let config_path = write_source_manifest_project(&root);
         let mut stdout = String::new();
@@ -797,7 +890,7 @@ mod tests {
         assert_eq!(
             run(
                 vec![
-                    "export".to_owned(),
+                    "roots".to_owned(),
                     "--config".to_owned(),
                     config_path.display().to_string(),
                 ],
@@ -811,7 +904,7 @@ mod tests {
         stderr.clear();
         let code = run(
             vec![
-                "check".to_owned(),
+                "roots-check".to_owned(),
                 "--config".to_owned(),
                 config_path.display().to_string(),
             ],
