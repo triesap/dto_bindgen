@@ -397,7 +397,7 @@ mod tests {
             let mut config = config();
             config.root_discovery.root_module_file = root_module_file.to_owned();
 
-            let err = generate_root_module(&config, &[inventory.clone()]).unwrap_err();
+            let err = generate_root_module(&config, std::slice::from_ref(&inventory)).unwrap_err();
 
             assert_eq!(
                 err,

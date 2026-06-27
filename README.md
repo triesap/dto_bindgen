@@ -45,6 +45,23 @@ dto_bindgen roots --config dto_bindgen.toml
 dto_bindgen roots-check --config dto_bindgen.toml
 ```
 
+Multi-package configs can keep top-level discovery explicit and declare
+package-scoped root modules instead:
+
+```toml
+[[package]]
+key = "core"
+rust_package = "radroots-core"
+rust_crate = "radroots_core"
+npm = "@radroots/core-bindings"
+out_dir = "packages/core-bindings/src/generated"
+
+[package.root_discovery]
+mode = "source_manifest"
+source_files = ["crates/core/src/lib.rs"]
+root_module_file = "crates/core/src/generated/dto_roots.rs"
+```
+
 Then include the generated module from a test, xtask, or export binary and call the normal compiled export path:
 
 ```rust,ignore
@@ -120,6 +137,7 @@ cargo run -p dto_bindgen_cli -- --help
 cargo run -p dto_bindgen_cli -- config --config dto_bindgen.toml
 cargo run -p dto_bindgen_cli -- roots --config dto_bindgen.toml
 cargo run -p dto_bindgen_cli -- roots-check --config dto_bindgen.toml
+cargo run -p dto_bindgen_cli -- diagnostics --json --config dto_bindgen.toml
 cargo run -p dto_bindgen_cli -- clean --config dto_bindgen.toml
 cargo run -p dto_bindgen_cli -- inventory --manifest dto_bindgen.inventory.toml \
   --json-out docs/implementation/reports/sdk_inventory_pilot.json \
@@ -127,6 +145,9 @@ cargo run -p dto_bindgen_cli -- inventory --manifest dto_bindgen.inventory.toml 
 ```
 
 Use a test, xtask, or small export binary that calls `dto_bindgen::export::export_with_roots` with the generated root module for backend rendering. Inventory and root discovery use explicit source inputs from manifests; the CLI does not scan every Rust root automatically, and `export`/`check` are reserved for compiled-root backend workflows.
+`diagnostics --json` reports each generated root module, configured source
+files, generated type paths, and whether the root module is missing, current, or
+stale.
 
 ## Supported MVP Shape
 
@@ -150,6 +171,7 @@ DTO-specific support:
 - `#[dto(as = "string_enum")]`
 - `#[dto(rename = "...")]` on string-enum variants
 - `#[dto(int = "json_string" | "json_number")]`
+- `#[dto(bytes = "base64")]` for `Vec<u8>` fields
 
 Unsupported behavior fails closed with diagnostics. MVP non-goals include implicit whole-crate discovery, `flatten`, `untagged`, container `default`, custom `serde(default = "...")` functions, custom `skip_serializing_if` predicates, arbitrary custom serializers, Pydantic, JSON Schema/OpenAPI, Swift/Kotlin backends, and UniFFI integration.
 
