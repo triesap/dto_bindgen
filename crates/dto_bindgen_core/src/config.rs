@@ -476,10 +476,11 @@ fn visit_package(
 
     if let Some(dependencies) = graph.get(package) {
         for dependency in dependencies {
-            if visiting.contains(dependency) || !visited.contains(dependency) {
-                if let Some(cycle) = visit_package(dependency, graph, visiting, visited, stack) {
-                    return Some(cycle);
-                }
+            if !visiting.contains(dependency) && visited.contains(dependency) {
+                continue;
+            }
+            if let Some(cycle) = visit_package(dependency, graph, visiting, visited, stack) {
+                return Some(cycle);
             }
         }
     }
