@@ -39,9 +39,9 @@ pub mod prelude {
 #[doc(hidden)]
 pub mod __private {
     pub use dto_bindgen_core::{
-        DefaultKind, DescribeCtx, EnumDef, EnumRepr, FieldContract, FieldDef, FieldPresence,
-        FieldWireContract, IdentName, IntRepr, RustTypeId, SourceSpan, StructDef, TargetFieldNames,
-        TypeDef, TypeRef, VariantDef, VariantShape, WireFieldNames,
+        BytesRepr, DefaultKind, DescribeCtx, EnumDef, EnumRepr, FieldContract, FieldDef,
+        FieldPresence, FieldWireContract, IdentName, IntRepr, RustTypeId, SourceSpan, StructDef,
+        TargetFieldNames, TypeDef, TypeRef, VariantDef, VariantShape, WireFieldNames,
     };
 }
 

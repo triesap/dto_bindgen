@@ -1194,6 +1194,25 @@ mod tests {
     }
 
     #[test]
+    fn renders_optional_base64_bytes_as_nullable_strings() {
+        let def = TypeDef::Struct(
+            dto_bindgen_core::StructDef::new("Attachment", "Attachment", span()).with_field(field(
+                "payload",
+                "payload",
+                TypeRef::option(TypeRef::Bytes(BytesRepr::Base64String)),
+            )),
+        );
+        let registry = registry_with_types([(RustTypeId::new("sdk", "sdk", "Attachment"), def)]);
+
+        let files = TypeScriptBackend::new()
+            .render(&registry, &per_type_config())
+            .unwrap();
+        let contents = find_file(&files, "attachment.ts").contents();
+
+        assert!(contents.contains("payload: string | null;"));
+    }
+
+    #[test]
     fn rejects_raw_bytes_for_json_exchange() {
         let def =
             TypeDef::Struct(

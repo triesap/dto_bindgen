@@ -65,6 +65,13 @@ struct UnannotatedLedgerEntry {
 
 #[allow(dead_code)]
 #[derive(Dto)]
+struct OptionalAttachment {
+    #[dto(bytes = "base64")]
+    payload: Option<Vec<u8>>,
+}
+
+#[allow(dead_code)]
+#[derive(Dto)]
 struct PresenceDefaults {
     display_name: Option<String>,
     #[serde(default)]
@@ -266,6 +273,37 @@ fn dto_int_satisfies_large_integer_policy() {
         def.fields[0].int_repr,
         Some(dto_bindgen::__private::IntRepr::JsonString)
     );
+
+    cleanup_config(&config_path);
+}
+
+#[test]
+fn dto_bytes_base64_supports_optional_vec_u8() {
+    let config_path = temp_config("");
+
+    let report =
+        dto_bindgen::export_types!(config = config_path.as_path(), roots = [OptionalAttachment],)
+            .unwrap();
+
+    let root = *report.registry.roots.iter().next().unwrap();
+    let dto_bindgen::__private::TypeDef::Struct(def) = report.registry.type_def(root).unwrap()
+    else {
+        panic!("expected attachment struct");
+    };
+    let payload = struct_field(def, "payload").unwrap();
+    let dto_bindgen::__private::TypeRef::Option(inner) = &payload.ty else {
+        panic!("expected optional payload");
+    };
+    assert!(matches!(
+        inner.as_ref(),
+        dto_bindgen::__private::TypeRef::Bytes(dto_bindgen::__private::BytesRepr::Base64String)
+    ));
+    assert!(payload.presence.nullable);
+    assert!(!payload.presence.required_on_deserialize);
+
+    let generated = config_path.parent().unwrap().join("generated/ts/types.ts");
+    let contents = std::fs::read_to_string(generated).unwrap();
+    assert!(contents.contains("payload?: string | null;"));
 
     cleanup_config(&config_path);
 }

@@ -1787,6 +1787,8 @@ mod tests {
                 legacy_sequence: u64,
                 #[dto(bytes = "base64")]
                 payload: Vec<u8>,
+                #[dto(bytes = "base64")]
+                optional_payload: Option<Vec<u8>>,
             }
         "#;
 

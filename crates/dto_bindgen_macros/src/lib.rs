@@ -686,15 +686,21 @@ fn type_ref_expr_tokens(
     }
 
     if let Some(bytes_repr) = bytes_repr {
-        if !is_vec_u8_type(ty) {
-            return Err(syn::Error::new_spanned(
-                ty,
-                "dto(bytes = \"base64\") is supported only for Vec<u8> fields",
+        let bytes_repr = bytes_repr.tokens();
+        let bytes_type = quote!(
+            ::dto_bindgen::__private::TypeRef::Bytes(#bytes_repr)
+        );
+        if is_vec_u8_type(ty) {
+            return Ok(bytes_type);
+        }
+        if option_inner_type(ty).is_some_and(is_vec_u8_type) {
+            return Ok(quote!(
+                ::dto_bindgen::__private::TypeRef::option(#bytes_type)
             ));
         }
-        let bytes_repr = bytes_repr.tokens();
-        return Ok(quote!(
-            ::dto_bindgen::__private::TypeRef::Bytes(#bytes_repr)
+        return Err(syn::Error::new_spanned(
+            ty,
+            "dto(bytes = \"base64\") is supported only for Vec<u8> or Option<Vec<u8>> fields",
         ));
     }
 
@@ -788,9 +794,7 @@ fn default_kind_tokens(ty: &Type) -> syn::Result<proc_macro2::TokenStream> {
 }
 
 fn is_option_type(ty: &Type) -> bool {
-    last_type_ident(ty)
-        .map(|ident| ident == "Option")
-        .unwrap_or(false)
+    option_inner_type(ty).is_some()
 }
 
 fn last_type_ident(ty: &Type) -> Option<&Ident> {
@@ -799,6 +803,23 @@ fn last_type_ident(ty: &Type) -> Option<&Ident> {
     };
 
     path.path.segments.last().map(|segment| &segment.ident)
+}
+
+fn option_inner_type(ty: &Type) -> Option<&Type> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "Option" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let Some(GenericArgument::Type(inner)) = args.args.first() else {
+        return None;
+    };
+    Some(inner)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1324,6 +1345,23 @@ mod tests {
     }
 
     #[test]
+    fn supports_optional_field_level_base64_bytes_mapping() {
+        let input: DeriveInput = syn::parse_quote! {
+            struct Attachment {
+                #[dto(bytes = "base64")]
+                payload: Option<Vec<u8>>,
+            }
+        };
+
+        let tokens = expand_dto(input).expect("expand").to_string();
+
+        assert!(tokens.contains("TypeRef :: option"));
+        assert!(tokens.contains("TypeRef :: Bytes"));
+        assert!(tokens.contains("BytesRepr :: Base64String"));
+        assert!(!tokens.contains("< Option < Vec < u8 > > as :: dto_bindgen :: Dto >"));
+    }
+
+    #[test]
     fn rejects_bytes_mapping_for_non_bytes_fields() {
         let input: DeriveInput = syn::parse_quote! {
             struct Attachment {
@@ -1334,7 +1372,7 @@ mod tests {
 
         let err = expand_dto(input).unwrap_err();
 
-        assert!(err.to_string().contains("supported only for Vec<u8>"));
+        assert!(err.to_string().contains("Option<Vec<u8>>"));
     }
 
     #[test]
