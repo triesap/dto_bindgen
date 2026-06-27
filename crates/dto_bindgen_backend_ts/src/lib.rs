@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dto_bindgen_core::{
     Backend, BackendCapabilities, BackendError, BackendId, BytesRepr, Config, Diagnostic,
-    DiagnosticCode, EnumDef, EnumRepr, FieldDef, GeneratedFile, GeneratedFileSet, IntRepr,
-    Primitive, Registry, StructDef, TsEmit, TypeDef, TypeId, TypeRef, TypeScriptLayout, VariantDef,
-    VariantShape, validate_registry_for_backend,
+    DiagnosticCode, EnumDef, EnumRepr, ExternalTypeImportConfig, FieldDef, GeneratedFile,
+    GeneratedFileSet, IntRepr, Primitive, Registry, StructDef, TsEmit, TypeDef, TypeId, TypeRef,
+    TypeScriptLayout, VariantDef, VariantShape, validate_registry_for_backend,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -73,21 +73,25 @@ fn render_per_type_files(
     registry: &Registry,
     config: &Config,
 ) -> Result<Vec<GeneratedFile>, BackendError> {
+    let ctx = TypeScriptRenderCtx::new(registry, config);
+    let local_types = sorted_local_types(registry, &ctx);
+    if local_types.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let mut files = Vec::new();
-    for (type_id, type_def) in sorted_registry_types(registry) {
+    for (type_id, type_def) in local_types {
         let contents =
-            render_type_file(type_id, type_def, registry, config).map_err(|diagnostic| {
+            render_type_file(type_id, type_def, registry, config, &ctx).map_err(|diagnostic| {
                 BackendError::from_diagnostic(BackendId::TypeScript, diagnostic)
             })?;
         files.push(generated_file(type_file_path(type_def, config), contents)?);
     }
 
-    if !registry.types_by_id.is_empty() {
-        files.push(generated_file(
-            index_file_path(config),
-            render_index_file(registry, config),
-        )?);
-    }
+    files.push(generated_file(
+        index_file_path(config),
+        render_index_file(registry, config, &ctx),
+    )?);
 
     Ok(files)
 }
@@ -96,16 +100,20 @@ fn render_bundle_files(
     registry: &Registry,
     config: &Config,
 ) -> Result<Vec<GeneratedFile>, BackendError> {
-    if registry.types_by_id.is_empty() {
+    let ctx = TypeScriptRenderCtx::new(registry, config);
+    if sorted_local_types(registry, &ctx).is_empty() {
         return Ok(Vec::new());
     }
 
-    let contents = render_bundle_file(registry, config)
+    let contents = render_bundle_file(registry, config, &ctx)
         .map_err(|diagnostic| BackendError::from_diagnostic(BackendId::TypeScript, diagnostic))?;
 
     Ok(vec![
         generated_file(bundle_file_path(config), contents)?,
-        generated_file(index_file_path(config), render_index_file(registry, config))?,
+        generated_file(
+            index_file_path(config),
+            render_index_file(registry, config, &ctx),
+        )?,
     ])
 }
 
@@ -134,21 +142,101 @@ fn sorted_registry_types(registry: &Registry) -> Vec<(TypeId, &TypeDef)> {
     types
 }
 
-fn render_bundle_file(registry: &Registry, config: &Config) -> Result<String, Diagnostic> {
-    let mut output = String::new();
+fn sorted_local_types<'a>(
+    registry: &'a Registry,
+    ctx: &TypeScriptRenderCtx<'_>,
+) -> Vec<(TypeId, &'a TypeDef)> {
+    sorted_registry_types(registry)
+        .into_iter()
+        .filter(|(type_id, _)| !ctx.is_external_type(*type_id))
+        .collect()
+}
 
-    for (index, (_, type_def)) in sorted_registry_types(registry).into_iter().enumerate() {
+struct TypeScriptRenderCtx<'a> {
+    external_types_by_id: BTreeMap<TypeId, &'a ExternalTypeImportConfig>,
+}
+
+impl<'a> TypeScriptRenderCtx<'a> {
+    fn new(registry: &Registry, config: &'a Config) -> Self {
+        let mut external_types_by_id = BTreeMap::new();
+        for external in &config.typescript.external_types {
+            if let Some(type_id) = registry.rust_id_to_type_id.get(&external.rust) {
+                external_types_by_id.insert(*type_id, external);
+            }
+        }
+        Self {
+            external_types_by_id,
+        }
+    }
+
+    fn is_external_type(&self, type_id: TypeId) -> bool {
+        self.external_types_by_id.contains_key(&type_id)
+    }
+
+    fn external_type(&self, type_id: TypeId) -> Option<&ExternalTypeImportConfig> {
+        self.external_types_by_id.get(&type_id).copied()
+    }
+}
+
+fn render_bundle_file(
+    registry: &Registry,
+    config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
+) -> Result<String, Diagnostic> {
+    let mut output = String::new();
+    let local_types = sorted_local_types(registry, ctx);
+    render_external_imports(&local_types, ctx, &mut output);
+
+    if !output.is_empty() {
+        output.push('\n');
+    }
+
+    for (index, (_, type_def)) in local_types.into_iter().enumerate() {
         if index > 0 {
             output.push('\n');
         }
 
         match type_def {
-            TypeDef::Struct(def) => render_struct(def, registry, config, &mut output)?,
-            TypeDef::Enum(def) => render_enum(def, registry, config, &mut output)?,
+            TypeDef::Struct(def) => render_struct(def, registry, config, ctx, &mut output)?,
+            TypeDef::Enum(def) => render_enum(def, registry, config, ctx, &mut output)?,
         }
     }
 
     Ok(output)
+}
+
+fn render_external_imports(
+    type_defs: &[(TypeId, &TypeDef)],
+    ctx: &TypeScriptRenderCtx<'_>,
+    output: &mut String,
+) {
+    let mut imports_by_module = BTreeMap::<&str, BTreeSet<&str>>::new();
+
+    for (_, type_def) in type_defs {
+        let mut named_refs = BTreeSet::new();
+        collect_type_def_named_refs(type_def, &mut named_refs);
+        for type_id in named_refs {
+            if let Some(external) = ctx.external_type(type_id) {
+                imports_by_module
+                    .entry(external.from.as_str())
+                    .or_default()
+                    .insert(external.typescript.as_str());
+            }
+        }
+    }
+
+    for (module, names) in imports_by_module {
+        output.push_str("import type { ");
+        for (index, name) in names.into_iter().enumerate() {
+            if index > 0 {
+                output.push_str(", ");
+            }
+            output.push_str(name);
+        }
+        output.push_str(" } from \"");
+        output.push_str(&escape_string_literal(module));
+        output.push_str("\";\n");
+    }
 }
 
 fn render_type_file(
@@ -156,9 +244,12 @@ fn render_type_file(
     type_def: &TypeDef,
     registry: &Registry,
     config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
 ) -> Result<String, Diagnostic> {
     let mut output = String::new();
-    let imports = collect_imports(type_id, type_def);
+    let imports = collect_imports(type_id, type_def, ctx);
+
+    render_external_imports(&[(type_id, type_def)], ctx, &mut output);
 
     for dependency in imports {
         let dependency_def = registry.type_def(dependency).ok_or_else(|| {
@@ -177,8 +268,8 @@ fn render_type_file(
     }
 
     match type_def {
-        TypeDef::Struct(def) => render_struct(def, registry, config, &mut output)?,
-        TypeDef::Enum(def) => render_enum(def, registry, config, &mut output)?,
+        TypeDef::Struct(def) => render_struct(def, registry, config, ctx, &mut output)?,
+        TypeDef::Enum(def) => render_enum(def, registry, config, ctx, &mut output)?,
     }
 
     Ok(output)
@@ -188,6 +279,7 @@ fn render_struct(
     def: &StructDef,
     registry: &Registry,
     config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
     output: &mut String,
 ) -> Result<(), Diagnostic> {
     output.push_str("export type ");
@@ -195,7 +287,7 @@ fn render_struct(
     output.push_str(" = {\n");
 
     for field in def.fields.iter().filter(|field| field_is_emitted(field)) {
-        render_object_field(field, registry, config, 2, output)?;
+        render_object_field(field, registry, config, ctx, 2, output)?;
     }
 
     output.push_str("};\n");
@@ -206,6 +298,7 @@ fn render_enum(
     def: &EnumDef,
     registry: &Registry,
     config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
     output: &mut String,
 ) -> Result<(), Diagnostic> {
     match &def.repr {
@@ -218,10 +311,18 @@ fn render_enum(
             render_fieldless_enum(def, output);
             Ok(())
         }
-        EnumRepr::Internal { tag } => render_tagged_enum(def, registry, config, tag, None, output),
-        EnumRepr::Adjacent { tag, content } => {
-            render_tagged_enum(def, registry, config, tag, Some(content.as_str()), output)
+        EnumRepr::Internal { tag } => {
+            render_tagged_enum(def, registry, config, ctx, tag, None, output)
         }
+        EnumRepr::Adjacent { tag, content } => render_tagged_enum(
+            def,
+            registry,
+            config,
+            ctx,
+            tag,
+            Some(content.as_str()),
+            output,
+        ),
         EnumRepr::External | EnumRepr::Untagged => Err(Diagnostic::error(
             DiagnosticCode::new(501),
             "unsupported enum representation",
@@ -252,6 +353,7 @@ fn render_tagged_enum(
     def: &EnumDef,
     registry: &Registry,
     config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
     tag: &str,
     content: Option<&str>,
     output: &mut String,
@@ -277,13 +379,13 @@ fn render_tagged_enum(
             push_object_key(output, content);
             output.push_str(": {\n");
             for field in fields.iter().filter(|field| field_is_emitted(field)) {
-                render_object_field(field, registry, config, 8, output)?;
+                render_object_field(field, registry, config, ctx, 8, output)?;
             }
             push_indent(output, 6);
             output.push_str("};\n");
         } else {
             for field in fields.iter().filter(|field| field_is_emitted(field)) {
-                render_object_field(field, registry, config, 6, output)?;
+                render_object_field(field, registry, config, ctx, 6, output)?;
             }
         }
 
@@ -298,6 +400,7 @@ fn render_object_field(
     field: &FieldDef,
     registry: &Registry,
     config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
     indent: usize,
     output: &mut String,
 ) -> Result<(), Diagnostic> {
@@ -313,6 +416,7 @@ fn render_object_field(
         field.int_repr,
         registry,
         config,
+        ctx,
         field,
     )?);
     output.push_str(";\n");
@@ -324,6 +428,7 @@ fn render_type_ref(
     int_repr: Option<IntRepr>,
     registry: &Registry,
     config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
     field: &FieldDef,
 ) -> Result<String, Diagnostic> {
     match ty {
@@ -338,11 +443,11 @@ fn render_type_ref(
         .with_backend(BackendId::TypeScript)),
         TypeRef::Option(inner) => Ok(format!(
             "{} | null",
-            render_type_ref(inner, int_repr, registry, config, field)?
+            render_type_ref(inner, int_repr, registry, config, ctx, field)?
         )),
         TypeRef::Vec(inner) | TypeRef::Array { item: inner, .. } => Ok(format!(
             "Array<{}>",
-            render_type_ref(inner, int_repr, registry, config, field)?
+            render_type_ref(inner, int_repr, registry, config, ctx, field)?
         )),
         TypeRef::Map { key, value } => {
             if !matches!(key.as_ref(), TypeRef::String) {
@@ -355,10 +460,13 @@ fn render_type_ref(
             }
             Ok(format!(
                 "Record<string, {}>",
-                render_type_ref(value, int_repr, registry, config, field)?
+                render_type_ref(value, int_repr, registry, config, ctx, field)?
             ))
         }
         TypeRef::Named(type_id) => {
+            if let Some(external) = ctx.external_type(*type_id) {
+                return Ok(external.typescript.clone());
+            }
             let def = registry.type_def(*type_id).ok_or_else(|| {
                 Diagnostic::error(DiagnosticCode::new(102), "missing named type reference")
                     .with_field(field.rust_name.to_string())
@@ -409,10 +517,15 @@ fn render_primitive(
     }
 }
 
-fn collect_imports(type_id: TypeId, type_def: &TypeDef) -> BTreeSet<TypeId> {
+fn collect_imports(
+    type_id: TypeId,
+    type_def: &TypeDef,
+    ctx: &TypeScriptRenderCtx<'_>,
+) -> BTreeSet<TypeId> {
     let mut imports = BTreeSet::new();
     collect_type_def_named_refs(type_def, &mut imports);
     imports.remove(&type_id);
+    imports.retain(|dependency| !ctx.is_external_type(*dependency));
     imports
 }
 
@@ -595,13 +708,18 @@ fn index_file_path(config: &Config) -> String {
     )
 }
 
-fn render_index_file(registry: &Registry, config: &Config) -> String {
+fn render_index_file(
+    registry: &Registry,
+    config: &Config,
+    ctx: &TypeScriptRenderCtx<'_>,
+) -> String {
     let mut output = String::new();
 
     match config.typescript.layout {
         TypeScriptLayout::Bundle => {
             output.push_str("export type { ");
-            for (index, (_, type_def)) in sorted_registry_types(registry).into_iter().enumerate() {
+            for (index, (_, type_def)) in sorted_local_types(registry, ctx).into_iter().enumerate()
+            {
                 if index > 0 {
                     output.push_str(", ");
                 }
@@ -612,7 +730,7 @@ fn render_index_file(registry: &Registry, config: &Config) -> String {
             output.push_str("\";\n");
         }
         TypeScriptLayout::PerType => {
-            for (_, type_def) in sorted_registry_types(registry) {
+            for (_, type_def) in sorted_local_types(registry, ctx) {
                 output.push_str("export type { ");
                 output.push_str(type_name(type_def));
                 output.push_str(" } from \"");
@@ -874,6 +992,59 @@ mod tests {
                 .iter()
                 .any(|file| file.relative_path().as_str().ends_with("user_profile.ts"))
         );
+    }
+
+    #[test]
+    fn renders_external_imports_in_bundle() {
+        let mut config = Config::default();
+        let external_rust_id =
+            RustTypeId::new("radroots-core", "radroots_core", "RadrootsCoreMoney")
+                .with_module_path(["money".to_owned()]);
+        config
+            .typescript
+            .external_types
+            .push(ExternalTypeImportConfig {
+                rust: external_rust_id.clone(),
+                typescript: "RadrootsCoreMoney".to_owned(),
+                from: "@radroots/core-bindings".to_owned(),
+            });
+
+        let mut registry = Registry::new();
+        let money_id = registry.register_type(
+            external_rust_id,
+            TypeDef::Struct(dto_bindgen_core::StructDef::new(
+                "CoreMoney",
+                "CoreMoney",
+                span(),
+            )),
+        );
+        let invoice = TypeDef::Struct(
+            dto_bindgen_core::StructDef::new("Invoice", "Invoice", span()).with_field(field(
+                "money",
+                "money",
+                TypeRef::named(money_id),
+            )),
+        );
+        registry.register_type(RustTypeId::new("sdk", "sdk", "Invoice"), invoice);
+
+        let files = TypeScriptBackend::new().render(&registry, &config).unwrap();
+        let bundle = find_file(&files, "types.ts");
+        let index = find_file(&files, "index.ts");
+
+        assert!(
+            bundle
+                .contents()
+                .contains("import type { RadrootsCoreMoney } from \"@radroots/core-bindings\";")
+        );
+        assert!(bundle.contents().contains("export type Invoice = {"));
+        assert!(bundle.contents().contains("money: RadrootsCoreMoney;"));
+        assert!(!bundle.contents().contains("export type CoreMoney"));
+        assert!(
+            index
+                .contents()
+                .contains("export type { Invoice } from \"./types\";")
+        );
+        assert!(!index.contents().contains("CoreMoney"));
     }
 
     #[test]
