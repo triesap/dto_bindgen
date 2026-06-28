@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::result_large_err)]
 
+mod module;
 mod syntax;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,6 +13,12 @@ use dto_bindgen_core::{
     TypeScriptLayout, VariantDef, VariantShape, validate_registry_for_backend,
 };
 use syntax::{escape_string_literal, is_valid_type_identifier, push_object_key, to_snake_case};
+
+pub use module::{
+    DtoRegistryRenderOptions, DtoTypeImport, DtoTypesModule, TypeScriptDeclaration,
+    TypeScriptImport, TypeScriptModule, TypeScriptParameter, TypeScriptProperty, TypeScriptType,
+    TypeScriptValue, render_registry_types,
+};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TypeScriptBackend;
