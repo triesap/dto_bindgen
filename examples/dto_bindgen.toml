@@ -1,6 +1,9 @@
+schema_version = 1
+
 [export]
 out_dir = "generated"
 emit_docs = false
+wire_format = "json"
 
 [numeric]
 large_int_policy = "require_explicit"
@@ -8,6 +11,9 @@ large_int_policy = "require_explicit"
 [typescript]
 enabled = true
 out_dir = "generated/ts"
+wire_contract = "json_exchange"
+layout = "bundle"
+bundle_file = "types.ts"
 emit = "ts"
 module_resolution = "bundler"
 import_extension = "none"
@@ -28,3 +34,8 @@ emit_from_dict = true
 emit_to_dict = true
 emit_py_typed = true
 unknown_fields = "ignore"
+
+[root_discovery]
+mode = "source_manifest"
+source_files = ["src/lib.rs"]
+root_module_file = "src/generated/dto_roots.rs"

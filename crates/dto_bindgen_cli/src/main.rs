@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CONFIG_PATH: &str = "dto_bindgen.toml";
 const DEFAULT_INVENTORY_MANIFEST_PATH: &str = "dto_bindgen.inventory.toml";
-const DEFAULT_INVENTORY_JSON_PATH: &str = "docs/implementation/reports/sdk_inventory_pilot.json";
-const DEFAULT_INVENTORY_MARKDOWN_PATH: &str = "docs/implementation/reports/sdk_inventory_pilot.md";
+const DEFAULT_INVENTORY_JSON_PATH: &str = "target/dto_bindgen/inventory.json";
+const DEFAULT_INVENTORY_MARKDOWN_PATH: &str = "target/dto_bindgen/inventory.md";
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();

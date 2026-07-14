@@ -25,6 +25,5 @@ the desired interpreter is not first on `PATH`.
 
 ## Release
 
-Crates.io publishing is operated from the private parent `triesap/dev`
-workspace through local Act workflows and `triesap-publish`. Do not publish with
-manual `cargo publish` commands from this repository.
+Maintainers publish the public crates as one coordinated release set. Do not
+publish individual crates independently.

@@ -1,18 +1,44 @@
 # dto_bindgen
 
-`dto_bindgen` derives a neutral DTO description from Rust source and renders passive TypeScript and Python DTO surfaces from explicit export roots or generated source-manifest roots.
+Rust-source-driven DTO generation for TypeScript and Python.
 
-The MVP targets:
+`dto_bindgen` reads explicit Rust DTO roots, applies supported Serde metadata,
+builds a neutral DTO description, and writes deterministic TypeScript and Python
+dataclass surfaces. Rust remains the source of truth. Unsupported shapes fail
+closed with diagnostics.
 
-- TypeScript `.ts` or `.d.ts` DTO files with type-only imports/exports.
-- Python 3.11 stdlib dataclasses with `from_dict`, `to_dict`, `StrEnum`, tagged-enum parser helpers, `DtoParseError`, and `py.typed`.
-- Deterministic safe output with a generated manifest, check mode, and manifest-based clean mode.
+## Status
+
+`dto_bindgen` is pre-1.0. The supported contract is intentionally small,
+deterministic, and tested.
+
+## Crates
+
+- `dto_bindgen`: facade crate for derive macros, config, diagnostics, and export helpers
+- `dto_bindgen_core`: neutral IR, config, validation, writer, and export orchestration
+- `dto_bindgen_macros`: `#[derive(Dto)]`
+- `dto_bindgen_backend_ts`: TypeScript renderer
+- `dto_bindgen_backend_python`: Python dataclass renderer
+- `dto_bindgen_cli`: `dto_bindgen` command-line helper
+- `dto_bindgen_test`: internal test helper, not published
+
+## Install
+
+```toml
+[dependencies]
+dto_bindgen = "0.1.0"
+```
+
+```sh
+cargo install dto_bindgen_cli
+```
 
 ## Quickstart
 
-Add `#[derive(dto_bindgen::Dto)]` to DTO types, mark package roots with `#[dto(export)]`, and keep Serde metadata as the wire-format source of truth.
+Mark exported Rust DTO roots with `#[dto(export)]`. Serde metadata defines the
+wire shape.
 
-```rust,no_run
+```rust
 use dto_bindgen::Dto;
 
 #[derive(Dto)]
@@ -25,46 +51,49 @@ struct UserProfile {
 
 #[derive(Dto)]
 #[dto(export)]
-#[serde(tag = "type", content = "payload", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    content = "payload",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 enum SdkEvent {
     UserCreated { user: UserProfile, event_id: String },
 }
 ```
 
-Generate the root module from an explicit source manifest:
+Create `dto_bindgen.toml`. A complete example is available at
+`examples/dto_bindgen.toml`.
 
 ```toml
+[export]
+out_dir = "generated"
+
+[typescript]
+enabled = true
+out_dir = "generated/ts"
+
+[python]
+enabled = true
+out_dir = "generated/python/my_sdk_dto"
+package = "my_sdk_dto"
+
 [root_discovery]
 mode = "source_manifest"
 source_files = ["src/lib.rs"]
 root_module_file = "src/generated/dto_roots.rs"
 ```
 
+Generate and check the Rust root module.
+
 ```sh
 dto_bindgen roots --config dto_bindgen.toml
 dto_bindgen roots-check --config dto_bindgen.toml
 ```
 
-Multi-package configs can keep top-level discovery explicit and declare
-package-scoped root modules instead:
+Run backend rendering from a compiled test, xtask, or small export binary.
 
-```toml
-[[package]]
-key = "core"
-rust_package = "radroots-core"
-rust_crate = "radroots_core"
-npm = "@radroots/core-bindings"
-out_dir = "packages/core-bindings/src/generated"
-
-[package.root_discovery]
-mode = "source_manifest"
-source_files = ["crates/core/src/lib.rs"]
-root_module_file = "crates/core/src/generated/dto_roots.rs"
-```
-
-Then include the generated module from a test, xtask, or export binary and call the normal compiled export path:
-
-```rust,ignore
+```rust
 mod generated {
     include!("generated/dto_roots.rs");
 }
@@ -78,80 +107,26 @@ fn main() -> Result<(), dto_bindgen::export::ExportError> {
 }
 ```
 
-Compiled exports remain explicit because Rust trait descriptors must be type checked by Rust. The `roots` CLI scans only configured source files and produces/checks the generated root module; backend exports still run through a compiled root harness.
-
-## Configuration
-
-```toml
-schema_version = 1
-
-[export]
-out_dir = "generated"
-emit_docs = false
-wire_format = "json"
-
-[numeric]
-large_int_policy = "require_explicit"
-
-[typescript]
-enabled = true
-out_dir = "generated/ts"
-wire_contract = "json_exchange"
-layout = "bundle"
-bundle_file = "types.ts"
-emit = "ts"
-module_resolution = "bundler"
-import_extension = "none"
-type_only_imports = true
-strict_null_checks_required = true
-style = "dto_bindgen"
-
-[python]
-enabled = true
-out_dir = "generated/python/my_sdk_dto"
-package = "my_sdk_dto"
-mode = "dataclass"
-python_version = "3.11"
-frozen = true
-slots = true
-kw_only = true
-emit_from_dict = true
-emit_to_dict = true
-emit_py_typed = true
-unknown_fields = "ignore"
-
-[root_discovery]
-mode = "source_manifest"
-source_files = ["src/lib.rs"]
-root_module_file = "src/generated/dto_roots.rs"
-```
-
-Backend generated paths must stay under `[export].out_dir`. The manifest is written inside that output root.
+Compiled exports are deliberate. Rust type descriptors must be type checked by
+Rust before generated TypeScript or Python is written.
 
 ## CLI
 
-The CLI is a helper for config, source-manifest root generation/checking, inventory reports, diagnostics plumbing, and manifest cleanup.
-
 ```sh
-cargo run -p dto_bindgen_cli -- --help
-cargo run -p dto_bindgen_cli -- config --config dto_bindgen.toml
-cargo run -p dto_bindgen_cli -- roots --config dto_bindgen.toml
-cargo run -p dto_bindgen_cli -- roots-check --config dto_bindgen.toml
-cargo run -p dto_bindgen_cli -- diagnostics --json --config dto_bindgen.toml
-cargo run -p dto_bindgen_cli -- clean --config dto_bindgen.toml
-cargo run -p dto_bindgen_cli -- inventory --manifest dto_bindgen.inventory.toml \
-  --json-out docs/implementation/reports/sdk_inventory_pilot.json \
-  --markdown-out docs/implementation/reports/sdk_inventory_pilot.md
+dto_bindgen config --config dto_bindgen.toml
+dto_bindgen roots --config dto_bindgen.toml
+dto_bindgen roots-check --config dto_bindgen.toml
+dto_bindgen diagnostics --json --config dto_bindgen.toml
+dto_bindgen clean --config dto_bindgen.toml
+dto_bindgen inventory --manifest dto_bindgen.inventory.toml
 ```
 
-Use a test, xtask, or small export binary that calls `dto_bindgen::export::export_with_roots` with the generated root module for backend rendering. Inventory and root discovery use explicit source inputs from manifests; the CLI does not scan every Rust root automatically, and `export`/`check` are reserved for compiled-root backend workflows.
-`diagnostics --json` reports each generated root module, configured source
-files, generated type paths, and whether the root module is missing, current, or
-stale.
+`export` and `check` are reserved for compiled-root workflows. Source-manifest
+commands only discover configured files; they do not scan whole crates.
 
-## Supported MVP Shape
+## Supported Shape
 
-Rust/Serde support:
+Rust and Serde support:
 
 - named structs
 - one-field `#[serde(transparent)]` structs
@@ -160,7 +135,7 @@ Rust/Serde support:
 - internally tagged enum struct variants
 - adjacently tagged enum unit, struct, and one-field newtype variants
 - `rename`, `rename_all`, `rename_all_fields`, and `deny_unknown_fields`
-- field `rename`, `skip`, `skip_serializing_if = "Option::is_none"` for `Option<T>`, and built-in `default` for `Option<T>`, `String`, `bool`, numeric types, `Vec<T>`, and string-keyed maps
+- field `rename`, `skip`, `skip_serializing_if = "Option::is_none"`, and built-in defaults
 - primitives, `Option<T>`, `Vec<T>`, arrays, string-keyed maps, and named DTO references
 
 DTO-specific support:
@@ -169,15 +144,11 @@ DTO-specific support:
 - `#[dto(skip)]`
 - `#[dto(as = "string")]`
 - `#[dto(as = "string_enum")]`
-- `#[dto(rename = "...")]` on string-enum variants
+- `#[dto(rename = "...")]`
 - `#[dto(int = "json_string" | "json_number")]`
-- `#[dto(bytes = "base64")]` for `Vec<u8>` fields
+- `#[dto(bytes = "base64")]`
 
-Unsupported behavior fails closed with diagnostics. MVP non-goals include implicit whole-crate discovery, `flatten`, `untagged`, container `default`, custom `serde(default = "...")` functions, custom `skip_serializing_if` predicates, arbitrary custom serializers, Pydantic, JSON Schema/OpenAPI, Swift/Kotlin backends, and UniFFI integration.
-
-## Numeric Policy
-
-Large Rust integers do not silently map to JSON-facing target types. With the default policy, fields such as `u64`, `i128`, and `u128` require an explicit `#[dto(int = "...")]` override.
+Large JSON-facing integers require an explicit policy.
 
 ```rust
 #[derive(dto_bindgen::Dto)]
@@ -187,40 +158,32 @@ struct LedgerEntry {
 }
 ```
 
-The Python backend parses `json_string` integers through `int(...)` and serializes them with `str(...)`. The TypeScript backend renders them as `string`.
+Unsupported behavior fails closed. Current non-goals include implicit whole-crate
+discovery, `flatten`, `untagged`, custom Serde functions, Pydantic, JSON Schema,
+OpenAPI, Swift, Kotlin, and UniFFI bindings.
 
 ## Verification
-
-Local and CI verification:
 
 ```sh
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-```
-
-Generated Python fixture tests use Python 3.11. Set `DTO_BINDGEN_PYTHON=/path/to/python3.11` to override the interpreter used by tests.
-
-## Release
-
-Crates.io publication is managed from the parent `triesap/dev` workspace through
-the local-only `.act/workflows/oss-publish-*` workflows and the private
-`triesap-publish` operator tool. Do not publish these crates with ad hoc
-`cargo publish` commands.
-
-The public release set is `dto_bindgen_core`, `dto_bindgen_macros`,
-`dto_bindgen_backend_python`, `dto_bindgen_backend_ts`, `dto_bindgen`, and
-`dto_bindgen_cli`. `dto_bindgen_test` is a private test helper and is not
-published.
-
-Before release, run the validation commands above plus:
-
-```sh
 npm ci
 npm run check:generated-ts
 ```
 
-## Examples
+Generated Python fixture tests use Python 3.11. Set `DTO_BINDGEN_PYTHON` to
+select a specific interpreter.
 
-See `crates/dto_bindgen/examples/basic_export.rs` for a compile-checked export harness covering structs, fieldless enums, tagged enums, and numeric policy.
+## Release
+
+Maintainers publish the public crates as one coordinated release set:
+`dto_bindgen_core`, `dto_bindgen_macros`, `dto_bindgen_backend_python`,
+`dto_bindgen_backend_ts`, `dto_bindgen`, and `dto_bindgen_cli`.
+
+`dto_bindgen_test` is private to the test suite and is not published.
+
+## License
+
+Licensed under either the MIT license or the Apache License, Version 2.0.

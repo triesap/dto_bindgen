@@ -8,15 +8,15 @@ This crate family is a UniFFI companion, not a UniFFI replacement. UniFFI owns n
 
 ## Always Read
 
-- `docs/implementation/BUILDOUT_PLAN.md`
 - `README.md`
 - `CHANGELOG.md`
 - `CONTRIBUTING.md`
 - `SECURITY.md`
 
-Historical handoff docs may be mounted by the private parent workspace at
-`../../../docs/handoff/dto_bindgen_handoff/`. Treat those files as background
-context when present, not as required public-repo files.
+## Public Repo Boundary
+
+- Write README, docs, examples, tests, comments, and package metadata as standalone public repository content.
+- Keep private operator context and external repository layout out of public repo content.
 
 ## Mandatory Boundaries
 
@@ -30,25 +30,15 @@ context when present, not as required public-repo files.
 - Generated file writing must be deterministic, path-contained, manifest-based, and all-or-nothing.
 - Prefer `#![forbid(unsafe_code)]` unless a crate has a documented exception.
 
-## RCLD Execution
-
-Follow `docs/implementation/BUILDOUT_PLAN.md` as the execution order.
-
-The raw handoff sequence in the private parent workspace is a useful reference
-when mounted, but it is not the final execution order. The buildout plan
-corrects known review findings, including target repo bootstrap, inventory
-ordering, the large-integer `serde(with)` conflict, and Python parser contract
-gaps.
-
 ## Default Verification
 
-Use repo-local commands once they exist. Until a Rust workspace exists, use docs-only checks for docs-only slices:
+For docs-only changes, use:
 
 ```sh
 git diff --check
 ```
 
-After the Rust workspace is scaffolded, the baseline is:
+For Rust changes, use:
 
 ```sh
 cargo fmt --all -- --check
@@ -63,4 +53,4 @@ Add clippy, all-features checks, TypeScript strict checks, and Python import/run
 - Keep commits small and green.
 - Do not mix generated-output churn with unrelated implementation work.
 - Do not claim a slice complete when required checks are red.
-- Document deviations from the handoff in the step report and, when durable, in `docs/implementation/BUILDOUT_PLAN.md`.
+- Keep durable project guidance in tracked repository files that make sense for public contributors.

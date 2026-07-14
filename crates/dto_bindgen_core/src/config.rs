@@ -688,7 +688,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_handoff_example() {
+    fn defaults_match_config_defaults() {
         let config = Config::default();
         assert_eq!(config.schema_version, CONFIG_SCHEMA_VERSION);
         assert_eq!(config.export.out_dir, "generated");
@@ -716,9 +716,7 @@ mod tests {
 
     #[test]
     fn parses_checked_in_example() {
-        let input = include_str!(
-            "../../../docs/handoff/dto_bindgen_handoff/repo/DTO_BINDGEN_TOML_EXAMPLE.toml"
-        );
+        let input = include_str!("../../../examples/dto_bindgen.toml");
         let config = Config::from_toml_str(input).unwrap();
 
         assert!(config.typescript.enabled);
