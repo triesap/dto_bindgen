@@ -202,6 +202,25 @@ cargo test --workspace --all-features
 
 Generated Python fixture tests use Python 3.11. Set `DTO_BINDGEN_PYTHON=/path/to/python3.11` to override the interpreter used by tests.
 
+## Release
+
+Crates.io publication is managed from the parent `triesap/dev` workspace through
+the local-only `.act/workflows/oss-publish-*` workflows and the private
+`triesap-publish` operator tool. Do not publish these crates with ad hoc
+`cargo publish` commands.
+
+The public release set is `dto_bindgen_core`, `dto_bindgen_macros`,
+`dto_bindgen_backend_python`, `dto_bindgen_backend_ts`, `dto_bindgen`, and
+`dto_bindgen_cli`. `dto_bindgen_test` is a private test helper and is not
+published.
+
+Before release, run the validation commands above plus:
+
+```sh
+npm ci
+npm run check:generated-ts
+```
+
 ## Examples
 
 See `crates/dto_bindgen/examples/basic_export.rs` for a compile-checked export harness covering structs, fieldless enums, tagged enums, and numeric policy.

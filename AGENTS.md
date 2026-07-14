@@ -9,17 +9,14 @@ This crate family is a UniFFI companion, not a UniFFI replacement. UniFFI owns n
 ## Always Read
 
 - `docs/implementation/BUILDOUT_PLAN.md`
-- `docs/handoff/dto_bindgen_handoff/summary.txt`
-- `docs/handoff/dto_bindgen_handoff/specs/PRODUCT_SPEC.md`
-- `docs/handoff/dto_bindgen_handoff/specs/ARCHITECTURE.md`
-- `docs/handoff/dto_bindgen_handoff/specs/API_CONTRACTS.md`
-- `docs/handoff/dto_bindgen_handoff/specs/SERDE_SUPPORT_MATRIX.md`
-- `docs/handoff/dto_bindgen_handoff/specs/BACKEND_TYPESCRIPT.md`
-- `docs/handoff/dto_bindgen_handoff/specs/BACKEND_PYTHON.md`
-- `docs/handoff/dto_bindgen_handoff/specs/NUMERIC_POLICY.md`
-- `docs/handoff/dto_bindgen_handoff/specs/OUTPUT_AND_FILESYSTEM.md`
-- `docs/handoff/dto_bindgen_handoff/specs/DIAGNOSTICS.md`
-- `docs/handoff/dto_bindgen_handoff/specs/ACCEPTANCE_CRITERIA.md`
+- `README.md`
+- `CHANGELOG.md`
+- `CONTRIBUTING.md`
+- `SECURITY.md`
+
+Historical handoff docs may be mounted by the private parent workspace at
+`../../../docs/handoff/dto_bindgen_handoff/`. Treat those files as background
+context when present, not as required public-repo files.
 
 ## Mandatory Boundaries
 
@@ -37,7 +34,11 @@ This crate family is a UniFFI companion, not a UniFFI replacement. UniFFI owns n
 
 Follow `docs/implementation/BUILDOUT_PLAN.md` as the execution order.
 
-The raw handoff sequence at `docs/handoff/dto_bindgen_handoff/implementation/COMMIT_SEQUENCE.md` is a useful reference, but it is not the final execution order. The buildout plan corrects known review findings, including target repo bootstrap, inventory ordering, the large-integer `serde(with)` conflict, and Python parser contract gaps.
+The raw handoff sequence in the private parent workspace is a useful reference
+when mounted, but it is not the final execution order. The buildout plan
+corrects known review findings, including target repo bootstrap, inventory
+ordering, the large-integer `serde(with)` conflict, and Python parser contract
+gaps.
 
 ## Default Verification
 
