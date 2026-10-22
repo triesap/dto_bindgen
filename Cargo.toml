@@ -18,7 +18,7 @@ authors = ["Tyson Lupul <tyson@radroots.org>"]
 description = "Rust-source-driven DTO bindgen for TypeScript and Python dataclass surfaces."
 readme = "README.md"
 repository = "https://github.com/triesap/dto_bindgen"
-rust-version = "1.92.0"
+rust-version = "1.99.0"
 keywords = ["dto", "serde", "typescript", "python", "codegen"]
 categories = ["development-tools", "encoding"]
 

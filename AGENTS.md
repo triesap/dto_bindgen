@@ -32,6 +32,8 @@ This crate family is a UniFFI companion, not a UniFFI replacement. UniFFI owns n
 
 ## Default Verification
 
+Use the pinned Rust 1.99.0 toolchain; all workspace packages inherit that MSRV.
+
 For docs-only changes, use:
 
 ```sh

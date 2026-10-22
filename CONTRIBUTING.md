@@ -4,6 +4,8 @@ Thanks for helping improve `dto_bindgen`.
 
 ## Development
 
+Use Rust 1.99.0, the pinned development toolchain and minimum supported version.
+
 Run the Rust validation lane before sending changes:
 
 ```sh

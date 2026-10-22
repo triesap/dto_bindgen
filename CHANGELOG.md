@@ -8,6 +8,7 @@ crate versions.
 
 ## Unreleased
 
+- Raise the minimum supported Rust version and development toolchain to 1.99.0.
 - Prepare the crate family for local Act-only crates.io publication.
 - Mark `dto_bindgen_test` as a private, non-published helper crate.
 
